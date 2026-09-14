@@ -1,0 +1,8 @@
+out
+node_modules
+*.vsix
+
+engine/.venv
+**/__pycache__
+*.pyc
+engine/.env
