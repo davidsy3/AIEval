@@ -15,6 +15,39 @@ If a vulnerability is detected, the framework will provide:
 
 After the suggested fix is applied, the framework will analyze the code again and run existing functional tests to determine whether the vulnerability was removed and whether the repair introduced any regressions.
 
+## Running the Extension
+
+### Prerequisites
+
+* [Node.js](https://nodejs.org/) and npm
+* [Visual Studio Code](https://code.visualstudio.com/)
+
+### Setup
+
+1. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+2. Compile the extension:
+
+   ```bash
+   npm run compile
+   ```
+
+   To automatically recompile on file changes, use watch mode instead:
+
+   ```bash
+   npm run watch
+   ```
+
+### Launching the Extension
+
+1. Open this folder in Visual Studio Code.
+2. Press `F5` (or run **Run > Start Debugging**) to open a new Extension Development Host window with the extension loaded.
+3. In the Extension Development Host window, open the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux) and run **AI Evaluator: Analyze for Vulnerabilities**.
+
 ## Supported Vulnerabilities
 
 The initial version of the project will focus on Python and a predefined set of vulnerabilities, including:
