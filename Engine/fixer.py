@@ -28,6 +28,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import anthropic
 from dotenv import load_dotenv
@@ -106,7 +107,7 @@ E. PROPOSE TO HUMAN
 """
 
 
-def extract_fixed_code(report: str) -> str | None:
+def extract_fixed_code(report: str) -> Optional[str]:
     """Pull the code block out of section D. Returns None if there is no fixed code."""
     section = re.search(r"D\. FIXED CODE\s*(.*?)(?:\n\s*E\. PROPOSE TO HUMAN|\Z)", report, re.DOTALL)
     if not section:
