@@ -15,6 +15,20 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	context.subscriptions.push(disposable);
+
+	if (context.extensionMode === vscode.ExtensionMode.Development) {
+		void openDevTestFile(context);
+	}
+}
+
+async function openDevTestFile(context: vscode.ExtensionContext): Promise<void> {
+	const testFile = path.join(context.extensionPath, 'Engine', 'testfile.py');
+	if (!fs.existsSync(testFile)) {
+		return;
+	}
+
+	const doc = await vscode.workspace.openTextDocument(testFile);
+	await vscode.window.showTextDocument(doc);
 }
 
 async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
@@ -34,12 +48,11 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 		vscode.window.showWarningMessage('AI Evaluator: Save the file before analyzing - results reflect the file on disk.');
 	}
 
-	const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-	const engineDir = workspaceFolder ? path.join(workspaceFolder.uri.fsPath, 'Engine') : undefined;
-	const fixerScript = engineDir ? path.join(engineDir, 'fixer.py') : undefined;
+	const engineDir = path.join(context.extensionPath, 'Engine');
+	const fixerScript = path.join(engineDir, 'fixer.py');
 
-	if (!engineDir || !fixerScript || !fs.existsSync(fixerScript)) {
-		vscode.window.showErrorMessage('AI Evaluator: Could not find Engine/fixer.py in this workspace.');
+	if (!fs.existsSync(fixerScript)) {
+		vscode.window.showErrorMessage(`AI Evaluator: Could not find fixer.py at ${fixerScript}`);
 		return;
 	}
 

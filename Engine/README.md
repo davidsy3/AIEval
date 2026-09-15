@@ -70,7 +70,7 @@ python fixer.py <path-to-python-file>
 Example:
 
 ```bash
-python fixer.py ../sample/vulnerable_sample.py
+python fixer.py testfile.py
 ```
 
 A run usually takes 30 seconds to a couple of minutes, depending on file size.
@@ -99,7 +99,7 @@ diff testfile.py output/testfile_fixed_<timestamp>.py
 
 ## Testing With a Vulnerable File
 
-`../sample/vulnerable_sample.py` has already been mostly fixed, so the model may report few or no findings. For a better test, create a file that still has every target vulnerability:
+`testfile.py` (used in the example above) already contains real, unfixed vulnerabilities, so `python fixer.py testfile.py` is the quickest way to see a full report. `../sample/vulnerable_sample.py` has already been mostly fixed, so the model may report few or no findings there. To construct a different test file with every target vulnerability:
 
 ```bash
 cat > test_vulnerable.py << 'EOF'

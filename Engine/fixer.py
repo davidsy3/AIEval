@@ -20,7 +20,7 @@ Setup
 
 Run
 ---
-    python fixer.py ../sample/vulnerable_sample.py
+    python fixer.py testfile.py
 """
 
 import os
@@ -120,6 +120,10 @@ def extract_fixed_code(report: str) -> Optional[str]:
 def fix_file(path: str) -> None:
     with open(path, "r", encoding="utf-8") as f:
         code = f.read()
+
+    print(f"--- Analyzing: {path} ---\n")
+    print(code)
+    print("--- Running AI Evaluator Engine ---\n")
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is not set -- copy engine/.env.example to engine/.env "
