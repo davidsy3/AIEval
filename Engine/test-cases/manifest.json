@@ -1,0 +1,12 @@
+[
+  {
+    "file": "bad/sqli_bad.py",
+    "expected_cwes": [
+      "CWE-89"
+    ]
+  },
+  {
+    "file": "clean/sqli_clean.py",
+    "expected_cwes": []
+  }
+]
