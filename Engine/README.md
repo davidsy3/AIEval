@@ -137,6 +137,21 @@ Expected result: about five findings (SQL injection, command injection, path tra
 
 To check for false positives, run it on a file with none of these issues. Section A should say `NO TARGET VULNERABILITIES FOUND`.
 
+## Benchmark Harness
+
+`fixer.py`'s API call now lives in its own function, `analyze_code(code, path) -> (report, stop_reason)`, so it can be called directly on in-memory code instead of only through the CLI. `fix_file()` is unchanged and still works the same way.
+
+This is what `benchmark/run_benchmark.py` uses to score detection accuracy against known ground truth:
+
+```bash
+cd benchmark
+python run_benchmark.py
+```
+
+It reads `benchmark/manifest.json` (each entry names a file in `benchmark/test_cases/` and the CWE ids that file *should* trigger, or `[]` for a clean file), calls `analyze_code()` on each one, extracts the CWE ids from section A, and prints per-file and overall precision/recall.
+
+To grow the benchmark, add a `.py` file to `test_cases/` and a matching entry to `manifest.json` — no other code changes needed. This only checks detection (section A); whether the generated fix in section D actually works is a separate, not-yet-built check.
+
 ## Troubleshooting
 
 | Message | Fix |

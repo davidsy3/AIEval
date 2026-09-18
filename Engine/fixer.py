@@ -107,13 +107,55 @@ E. PROPOSE TO HUMAN
 """
 
 
+def analyze_code(code: str, path: str = "<in-memory>") -> tuple[str, str]:
+    """
+    Run ONE model call against a code string and return (report_text, stop_reason).
+
+    This is the reusable core: fix_file() below calls it for the CLI, and a
+    benchmark script can call it directly on test-case strings with no file I/O.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set -- copy engine/.env.example to engine/.env "
+            "and paste your key."
+        )
+
+    client = anthropic.Anthropic()
+    message = client.messages.create(
+        model="claude-sonnet-5",
+        max_tokens=16000,
+        system=SYSTEM_PROMPT,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Here is the file `{path}`:\n\n```\n{code}\n```",
+            }
+        ],
+    )
+    report = "".join(block.text for block in message.content if block.type == "text")
+    return report, message.stop_reason
+
+
+def extract_section(report: str, name: str, next_name: Optional[str]) -> str:
+    """Pull the raw text of one lettered section out of the report."""
+    if next_name:
+        pattern = rf"{re.escape(name)}\s*(.*?)(?:\n\s*{re.escape(next_name)}|\Z)"
+    else:
+        pattern = rf"{re.escape(name)}\s*(.*)"
+    m = re.search(pattern, report, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+def extract_findings_cwes(report: str) -> set[str]:
+    """Return the set of CWE ids (e.g. {'CWE-89'}) mentioned in section A."""
+    section_a = extract_section(report, "A. FINDINGS", "B. EXPLANATIONS")
+    return set(re.findall(r"CWE-\d+", section_a))
+
+
 def extract_fixed_code(report: str) -> Optional[str]:
     """Pull the code block out of section D. Returns None if there is no fixed code."""
-    section = re.search(r"D\. FIXED CODE\s*(.*?)(?:\n\s*E\. PROPOSE TO HUMAN|\Z)", report, re.DOTALL)
-    if not section:
-        return None
-    # Greedy match so the whole block is captured even if the code itself contains ```.
-    block = re.search(r"```[^\n]*\n(.*)\n\s*```", section.group(1), re.DOTALL)
+    section = extract_section(report, "D. FIXED CODE", "E. PROPOSE TO HUMAN")
+    block = re.search(r"```[^\n]*\n(.*)\n\s*```", section, re.DOTALL)
     return block.group(1) + "\n" if block else None
 
 
@@ -125,30 +167,7 @@ def fix_file(path: str) -> None:
     print(code)
     print("--- Running AI Evaluator Engine ---\n")
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ANTHROPIC_API_KEY is not set -- copy engine/.env.example to engine/.env "
-              "and paste your key.", file=sys.stderr)
-        sys.exit(1)
-
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY (loaded from .env above)
-
-    message = client.messages.create(
-        # Swap to "claude-opus-5" for harder cases, or "claude-haiku-4-5" for speed/cost.
-        # Note: Sonnet 5 does not accept temperature/top_p/top_k (returns a 400).
-        model="claude-sonnet-5",
-        max_tokens=16000,  # room for the full fixed file plus explanations
-        system=SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Here is the file `{path}`:\n\n```\n{code}\n```",
-            }
-        ],
-    )
-
-    # Sonnet 5 thinks by default, so the response can contain thinking blocks
-    # before the answer -- keep only the text blocks.
-    report = "".join(block.text for block in message.content if block.type == "text")
+    report, stop_reason = analyze_code(code, path=path)
     print(report)
 
     # Never touch the input file -- write the fixed code and the report to new files
@@ -170,10 +189,10 @@ def fix_file(path: str) -> None:
         fixed_path.write_text(fixed_code, encoding="utf-8")
         print(f"[saved] Fixed code: {fixed_path}", file=sys.stderr)
 
-    if message.stop_reason == "max_tokens":
+    if stop_reason == "max_tokens":
         print("\n[warning] Output was cut off at max_tokens -- the fixed code may be incomplete.",
               file=sys.stderr)
-    elif message.stop_reason == "refusal":
+    elif stop_reason == "refusal":
         print("\n[warning] The model declined this request.", file=sys.stderr)
 
 
