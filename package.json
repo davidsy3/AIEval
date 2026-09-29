@@ -1,6 +1,7 @@
 {
   "name": "ai-evaluator",
   "displayName": "AI Evaluator",
+  "publisher": "aieval",
   "description": "Analyze newly accepted AI-generated Python code for security vulnerabilities.",
   "version": "0.0.1",
   "engines": {
@@ -17,9 +18,43 @@
     "commands": [
       {
         "command": "aiEvaluator.analyzeForVulnerabilities",
-        "title": "AI Evaluator: Analyze for Vulnerabilities"
+        "title": "AI Evaluator: Analyze for Vulnerabilities",
+        "icon": "media/ai-evaluator.svg"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiEvaluator",
+          "title": "AI Evaluator",
+          "icon": "media/ai-evaluator.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiEvaluator": [
+        {
+          "id": "aiEvaluator.analyze",
+          "name": "Analyze",
+          "icon": "media/ai-evaluator.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "aiEvaluator.analyze",
+        "contents": "Analyze the active Python file for security vulnerabilities.\n[Run AI Analysis](command:aiEvaluator.analyzeForVulnerabilities)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "aiEvaluator.analyzeForVulnerabilities",
+          "when": "resourceLangId == python",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
