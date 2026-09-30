@@ -16,6 +16,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "aiEvaluator.open",
+        "title": "AI Evaluator: Open"
+      },
+      {
         "command": "aiEvaluator.analyzeForVulnerabilities",
         "title": "AI Evaluator: Analyze for Vulnerabilities"
       }
