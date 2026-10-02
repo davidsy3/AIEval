@@ -1,0 +1,1321 @@
+{
+  "dataset_version": "0.1",
+  "matching_rule": "A finding matches a vulnerability if CWE is equal and its line range overlaps [line_start-3, line_end+3] of the primary location or of any entry in related_lines.",
+  "cases": [
+    {
+      "case_id": "case_01_inventory_lookup",
+      "category": "single",
+      "context": "Warehouse stock lookup by item name with a small argparse CLI, backed by SQLite",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_01-v1",
+          "cwe": "CWE-89",
+          "function": "find_item",
+          "line_start": 29,
+          "line_end": 30,
+          "source": "find_item(name) argument, supplied from the CLI positional 'name'",
+          "sink": "conn.execute(query) where query is an f-string containing name",
+          "description": "The item name is f-stringed into the SELECT; pass it as a ? parameter instead.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_sqli_find_item",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_01-d1",
+          "looks_like": "CWE-89",
+          "function": "count_in_location",
+          "line_start": 35,
+          "line_end": 38,
+          "why_safe": "Only the module constant TABLE is f-stringed; location and min_quantity are bound parameters.",
+          "security_test": "test_security.py::test_d1_count_in_location_not_injectable"
+        }
+      ]
+    },
+    {
+      "case_id": "case_02_employee_directory",
+      "category": "single",
+      "context": "Staff directory class that lists employees by department, backed by SQLite",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_02-v1",
+          "cwe": "CWE-89",
+          "function": "EmployeeDirectory._where_clause",
+          "line_start": 30,
+          "line_end": 31,
+          "related_lines": [
+            {
+              "function": "EmployeeDirectory.by_department",
+              "line_start": 33,
+              "line_end": 37
+            }
+          ],
+          "source": "by_department(department) argument",
+          "sink": "self.conn.execute() of a SELECT whose WHERE clause comes from the _where_clause helper",
+          "description": "The helper returns a WHERE clause with the department f-stringed into it; return a placeholder plus its parameter instead.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_sqli_by_department",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_03_book_catalog",
+      "category": "single",
+      "context": "Library catalog search over titles and authors, plain functions over SQLite",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_03-v1",
+          "cwe": "CWE-89",
+          "function": "search_by_title",
+          "line_start": 42,
+          "line_end": 45,
+          "related_lines": [
+            {
+              "function": "_check_term",
+              "line_start": 30,
+              "line_end": 37
+            }
+          ],
+          "source": "search_by_title(title) argument, screened by _check_term",
+          "sink": "conn.execute() of a LIKE clause with the term f-stringed in",
+          "description": "_check_term only rejects ';' and '--', then the term is f-stringed into the LIKE clause; a quote-based payload passes the check. Bind the %term% pattern as a parameter.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v1_sqli_search_by_title",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_03-d1",
+          "looks_like": "CWE-89",
+          "function": "search_by_author",
+          "line_start": 51,
+          "line_end": 55,
+          "why_safe": "Only the module constant CATALOG is f-stringed; the %author% pattern is a bound parameter.",
+          "security_test": "test_security.py::test_d1_search_by_author_not_injectable"
+        }
+      ]
+    },
+    {
+      "case_id": "case_04_ticket_status_report",
+      "category": "single",
+      "context": "Support-ticket CSV export filtered by status, driven by an argparse CLI",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_04-v1",
+          "cwe": "CWE-89",
+          "function": "tickets_with_status",
+          "line_start": 34,
+          "line_end": 41,
+          "related_lines": [
+            {
+              "function": "main",
+              "line_start": 76,
+              "line_end": 76
+            }
+          ],
+          "source": "tickets_with_status(status) argument, supplied from the CLI positional 'status'",
+          "sink": "conn.execute(query) where query is built by string concatenation",
+          "description": "The status is concatenated into the WHERE clause with '+'; pass it as a ? parameter instead.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_sqli_tickets_with_status",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_05_disk_usage_report",
+      "category": "single",
+      "context": "Per-folder disk usage summary that shells out to du and ls",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_05-v1",
+          "cwe": "CWE-78",
+          "function": "folder_size_kb",
+          "line_start": 11,
+          "line_end": 11,
+          "related_lines": [
+            {
+              "function": "usage_report",
+              "line_start": 32,
+              "line_end": 32
+            },
+            {
+              "function": "format_report",
+              "line_start": 53,
+              "line_end": 53
+            }
+          ],
+          "source": "folder_size_kb(folder) argument, reached from usage_report and format_report",
+          "sink": "subprocess.check_output(..., shell=True) on an f-stringed du command",
+          "description": "The folder path is f-stringed into a shell command line; run du with a list of arguments and no shell.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_command_execution_folder_size",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_05-d1",
+          "looks_like": "CWE-78",
+          "function": "list_folders",
+          "line_start": 17,
+          "line_end": 19,
+          "why_safe": "ls is run with a list of arguments and shell=False, so base is never parsed by a shell.",
+          "security_test": "test_security.py::test_d1_list_folders_no_shell"
+        }
+      ]
+    },
+    {
+      "case_id": "case_06_log_search",
+      "category": "single",
+      "context": "Grep-style search class that counts pattern matches across a folder of log files",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_06-v1",
+          "cwe": "CWE-78",
+          "function": "LogSearcher._build_cmd",
+          "line_start": 25,
+          "line_end": 26,
+          "related_lines": [
+            {
+              "function": "LogSearcher.count_matches",
+              "line_start": 28,
+              "line_end": 31
+            }
+          ],
+          "source": "count_matches(pattern) argument, also reached through count_all and summary",
+          "sink": "os.popen() of the command string returned by _build_cmd",
+          "description": "The helper builds a grep command line with the pattern f-stringed in and os.popen runs it through a shell; build an argument list and run it without a shell.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_command_execution_count_matches",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_07_backup_archiver",
+      "category": "single",
+      "context": "Argparse CLI that tars a project folder into a labelled backup archive and rotates old ones",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_07-v1",
+          "cwe": "CWE-78",
+          "function": "create_archive",
+          "line_start": 32,
+          "line_end": 32,
+          "related_lines": [
+            {
+              "function": "_check_label",
+              "line_start": 13,
+              "line_end": 20
+            },
+            {
+              "function": "archive_path",
+              "line_start": 23,
+              "line_end": 24
+            }
+          ],
+          "source": "label argument, from the CLI --label option, which reaches the archive path",
+          "sink": "subprocess.run(..., shell=True) on an f-stringed tar command line",
+          "description": "_check_label only blocks ';' and '|', so '&&', a newline and '$(...)' reach the shell through the archive path. Run tar with a list of arguments and no shell.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v1_command_execution_create_archive",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_08_text_stats",
+      "category": "single",
+      "context": "Dataclass-based line/word/character counter for text files, shelling out to wc",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_08-v1",
+          "cwe": "CWE-78",
+          "function": "_wc_command",
+          "line_start": 29,
+          "line_end": 30,
+          "related_lines": [
+            {
+              "function": "stats_for",
+              "line_start": 33,
+              "line_end": 34
+            }
+          ],
+          "source": "stats_for(path) argument, also reached through stats_for_folder",
+          "sink": "subprocess.check_output(..., shell=True) on the command string from _wc_command",
+          "description": "shlex.quote() output is wrapped in double quotes, so its single quotes are literal and $(...) and backticks still expand. Run wc with a list of arguments and no shell.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v1_command_execution_stats_for",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_09_log_viewer",
+      "category": "single",
+      "context": "Helpers that serve the tail of a named log file out of a log directory, with an ETag",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_09-v1",
+          "cwe": "CWE-22",
+          "function": "read_log",
+          "line_start": 17,
+          "line_end": 19,
+          "related_lines": [
+            {
+              "function": "tail",
+              "line_start": 23,
+              "line_end": 23
+            },
+            {
+              "function": "serve",
+              "line_start": 43,
+              "line_end": 43
+            }
+          ],
+          "source": "read_log(name) argument, reached from tail, etag, level_counts and serve",
+          "sink": "open(os.path.join(log_dir, name))",
+          "description": "The requested name is joined to the log directory and opened with no containment check, so '../' steps and absolute paths escape it. Resolve the path and require it to stay under the directory.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_path_traversal_read_log",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_09-d1",
+          "looks_like": "CWE-327",
+          "function": "etag",
+          "line_start": 27,
+          "line_end": 30,
+          "why_safe": "MD5 is called with usedforsecurity=False purely as a cache validator, never for authentication or integrity.",
+          "security_test": "test_security.py::test_d1_etag_md5_is_non_security_use"
+        }
+      ]
+    },
+    {
+      "case_id": "case_10_file_share",
+      "category": "single",
+      "context": "Class that serves downloads out of one share root directory",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_10-v1",
+          "cwe": "CWE-22",
+          "function": "FileShare._locate",
+          "line_start": 15,
+          "line_end": 16,
+          "related_lines": [
+            {
+              "function": "FileShare.download",
+              "line_start": 24,
+              "line_end": 28
+            },
+            {
+              "function": "FileShare.info",
+              "line_start": 33,
+              "line_end": 37
+            },
+            {
+              "function": "FileShare.store",
+              "line_start": 39,
+              "line_end": 45
+            }
+          ],
+          "source": "name argument of download, preview, info, exists and store",
+          "sink": "Path read/write on the value returned by _locate",
+          "description": "_locate joins the name onto the root with the / operator, so '..' steps escape and an absolute name replaces the root entirely. Resolve the result and require it to stay under the root.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_path_traversal_download",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_11_template_loader",
+      "category": "single",
+      "context": "Email template loader that renders named plain-text templates with placeholders",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_11-v1",
+          "cwe": "CWE-22",
+          "function": "_strip_parent_refs",
+          "line_start": 10,
+          "line_end": 12,
+          "related_lines": [
+            {
+              "function": "template_path",
+              "line_start": 15,
+              "line_end": 16
+            },
+            {
+              "function": "load_template",
+              "line_start": 26,
+              "line_end": 28
+            }
+          ],
+          "source": "template name passed to load_template, render, placeholders and subject_of",
+          "sink": "open(template_path(name, template_dir))",
+          "description": "The name is cleaned with a single name.replace('../', '') pass, which '....//' and '..././' survive, and an absolute name replaces the directory. Resolve the path and require it to stay under the template directory.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v1_path_traversal_load_template",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_12_report_exporter",
+      "category": "single",
+      "context": "Argparse CLI that writes CSV reports into an exports directory and reads them back",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_12-v1",
+          "cwe": "CWE-22",
+          "function": "_inside_base",
+          "line_start": 13,
+          "line_end": 14,
+          "related_lines": [
+            {
+              "function": "export_path",
+              "line_start": 17,
+              "line_end": 23
+            },
+            {
+              "function": "write_report",
+              "line_start": 33,
+              "line_end": 35
+            }
+          ],
+          "source": "report name passed to write_report, from the CLI positional 'name'",
+          "sink": "open(path, 'w') on the value returned by export_path",
+          "description": "Containment is checked with abspath().startswith() and no separator, so a sibling directory sharing the base name's prefix (exports_old next to exports) passes. Compare resolved paths instead.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v1_path_traversal_write_report",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_12-d1",
+          "looks_like": "CWE-22",
+          "function": "read_report",
+          "line_start": 43,
+          "line_end": 47,
+          "why_safe": "The read path is resolved and required to be relative to the resolved base directory before it is opened.",
+          "security_test": "test_security.py::test_d1_read_report_rejects_traversal"
+        }
+      ]
+    },
+    {
+      "case_id": "case_13_member_login",
+      "category": "single",
+      "context": "Gym membership credential store in SQLite, holding rows migrated from an older booking system",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_13-v1",
+          "cwe": "CWE-327",
+          "function": "MemberStore._hash",
+          "line_start": 25,
+          "line_end": 26,
+          "related_lines": [
+            {
+              "function": "MemberStore.register",
+              "line_start": 36,
+              "line_end": 36
+            },
+            {
+              "function": "MemberStore.login",
+              "line_start": 62,
+              "line_end": 66
+            },
+            {
+              "function": "MemberStore.change_password",
+              "line_start": 73,
+              "line_end": 76
+            }
+          ],
+          "source": "member password passed to register, login and change_password",
+          "sink": "hashlib.md5(password).hexdigest() stored in the password_hash column",
+          "description": "Passwords are stored as bare MD5 digests: fast, unsalted and reversible by lookup. Store a salted pbkdf2/scrypt digest instead.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_weak_password_hash",
+          "expected_fix_risk": "Medium",
+          "regression_note": "Rows loaded by import_legacy hold bare MD5 digests from the old system. A fix that only understands the new format locks those members out; the functional oracle logs one in twice, so the fix must verify legacy rows (and may upgrade them in place)."
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_14_license_checker",
+      "category": "single",
+      "context": "Offline license-key issuer and verifier, signing key fields with a caller-supplied secret",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_14-v1",
+          "cwe": "CWE-327",
+          "function": "_sign",
+          "line_start": 15,
+          "line_end": 16,
+          "related_lines": [
+            {
+              "function": "issue_key",
+              "line_start": 19,
+              "line_end": 22
+            },
+            {
+              "function": "verify_key",
+              "line_start": 51,
+              "line_end": 53
+            }
+          ],
+          "source": "issuer secret and license payload passed to _sign",
+          "sink": "hashlib.sha1(secret + payload).hexdigest() used as the license MAC",
+          "description": "The MAC is a bare SHA-1 of secret concatenated with the payload: a broken hash used in a construction open to length extension. Use hmac.new with SHA-256 and compare with compare_digest.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_weak_license_mac",
+          "expected_fix_risk": "Medium",
+          "regression_note": "Keys issued by the old construction stop verifying once the MAC changes; that is expected here, since the functional oracle only round-trips keys issued by the same module."
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_15_forum_accounts",
+      "category": "single",
+      "context": "Forum account registration and sign-in over a dict of Account dataclasses",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_15-v1",
+          "cwe": "CWE-327",
+          "function": "hash_password",
+          "line_start": 23,
+          "line_end": 24,
+          "related_lines": [
+            {
+              "function": "register",
+              "line_start": 33,
+              "line_end": 33
+            },
+            {
+              "function": "authenticate",
+              "line_start": 39,
+              "line_end": 43
+            },
+            {
+              "function": "change_password",
+              "line_start": 46,
+              "line_end": 51
+            }
+          ],
+          "source": "account password passed to register, authenticate and change_password",
+          "sink": "hashlib.sha256(SITE_SALT + password).hexdigest() stored on the Account",
+          "description": "One global salt plus a single fast SHA-256 pass: two accounts with the same password get identical digests and the whole table is brute-forceable at speed. Use a per-account random salt with pbkdf2/scrypt.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v1_weak_password_hash",
+          "expected_fix_risk": "Medium"
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_15-d1",
+          "looks_like": "CWE-78",
+          "function": "notify",
+          "line_start": 61,
+          "line_end": 69,
+          "why_safe": "echo is run with a list of arguments and shell=False, so the username and message are never parsed by a shell.",
+          "security_test": "test_security.py::test_d1_notify_uses_no_shell"
+        }
+      ]
+    },
+    {
+      "case_id": "case_16_api_client_registry",
+      "category": "single",
+      "context": "In-memory registry of internal API clients, storing a digest of each client secret",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_16-v1",
+          "cwe": "CWE-327",
+          "function": "ClientRegistry._digest",
+          "line_start": 17,
+          "line_end": 18,
+          "related_lines": [
+            {
+              "function": "ClientRegistry.register",
+              "line_start": 31,
+              "line_end": 31
+            },
+            {
+              "function": "ClientRegistry.authenticate",
+              "line_start": 42,
+              "line_end": 46
+            },
+            {
+              "function": "ClientRegistry.rotate_secret",
+              "line_start": 48,
+              "line_end": 53
+            }
+          ],
+          "source": "client secret passed to register, authenticate and rotate_secret",
+          "sink": "hashlib.sha1(secret).hexdigest() stored as the client's digest",
+          "description": "Client secrets are stored as unsalted SHA-1 digests, so equal secrets collide and the digests are cheap to attack offline. Use a per-client random salt with pbkdf2/scrypt.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_weak_secret_digest",
+          "expected_fix_risk": "Medium"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_17_note_sync",
+      "category": "multi",
+      "context": "Note-taking CLI that stores notes in SQLite and produces HMAC-signed export bundles for syncing",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_17-v1",
+          "cwe": "CWE-89",
+          "function": "_match_clause",
+          "line_start": 32,
+          "line_end": 33,
+          "related_lines": [
+            {
+              "function": "search_notes",
+              "line_start": 37,
+              "line_end": 40
+            }
+          ],
+          "source": "search_notes(term) argument, from the CLI 'search' subcommand",
+          "sink": "conn.execute() of a WHERE clause built by the _match_clause helper",
+          "description": "The search term is f-stringed into the LIKE clause by a helper; bind the %term% pattern as a parameter.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_sqli_search_notes",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_17-v2",
+          "cwe": "CWE-798",
+          "function": "<module>",
+          "line_start": 10,
+          "line_end": 10,
+          "related_lines": [
+            {
+              "function": "sign_payload",
+              "line_start": 59,
+              "line_end": 60
+            }
+          ],
+          "source": "SYNC_TOKEN string literal",
+          "sink": "hmac.new(SYNC_TOKEN, ...) in sign_payload / verify_payload",
+          "description": "The sync signing token is a literal in source; read it from the environment and fail closed when it is missing.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v2_hardcoded_sync_token",
+          "expected_fix_risk": "Medium",
+          "regression_note": "A fix that falls back to an empty or default token when the variable is unset lets anyone forge bundles; the security test checks this."
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_17-d1",
+          "looks_like": "CWE-89",
+          "function": "count_by_tag",
+          "line_start": 45,
+          "line_end": 47,
+          "why_safe": "Only the module constant NOTES_TABLE is f-stringed; tag is a bound parameter.",
+          "security_test": "test_security.py::test_d1_count_by_tag_not_injectable"
+        }
+      ]
+    },
+    {
+      "case_id": "case_18_webhook_relay",
+      "category": "multi",
+      "context": "Webhook relay that verifies incoming event signatures and runs a configured local hook command",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_18-v1",
+          "cwe": "CWE-78",
+          "function": "run_hook",
+          "line_start": 35,
+          "line_end": 45,
+          "related_lines": [
+            {
+              "function": "deliver",
+              "line_start": 69,
+              "line_end": 73
+            }
+          ],
+          "source": "event name from the webhook body, substituted into the hook command template",
+          "sink": "subprocess.run(command, shell=True) where command comes from str.format",
+          "description": "The event value is formatted into the command template and the result is run through a shell. Split the template into an argument list and run it without a shell.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_command_execution_run_hook",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_18-v2",
+          "cwe": "CWE-798",
+          "function": "_default_secret",
+          "line_start": 12,
+          "line_end": 13,
+          "related_lines": [
+            {
+              "function": "sign_event",
+              "line_start": 25,
+              "line_end": 28
+            }
+          ],
+          "source": "literal returned by _default_secret, the HookConfig.signing_secret field default",
+          "sink": "hmac.new(config.signing_secret, ...) in sign_event / verify_event",
+          "description": "The webhook signing secret is a dataclass field default in source. Read it from the environment when no secret is configured at runtime, and fail closed when it is missing.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v2_hardcoded_signing_secret",
+          "expected_fix_risk": "Medium",
+          "regression_note": "A fix that falls back to an empty or default secret when the variable is unset lets anyone forge deliveries; the security test checks this."
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_18-d1",
+          "looks_like": "CWE-78",
+          "function": "probe",
+          "line_start": 48,
+          "line_end": 53,
+          "why_safe": "echo is run with a list of arguments and shell=False, so the hook name is never parsed by a shell.",
+          "security_test": "test_security.py::test_d1_probe_uses_no_shell"
+        }
+      ]
+    },
+    {
+      "case_id": "case_19_thumbnail_cache",
+      "category": "multi",
+      "context": "Thumbnail cache for gallery uploads, addressing cache entries by key and signing thumbnail URLs",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_19-v1",
+          "cwe": "CWE-22",
+          "function": "ThumbnailCache.build",
+          "line_start": 36,
+          "line_end": 38,
+          "related_lines": [
+            {
+              "function": "ThumbnailCache.get",
+              "line_start": 44,
+              "line_end": 49
+            }
+          ],
+          "source": "upload name passed to build and get",
+          "sink": "Path.read_bytes() on self.uploads / name",
+          "description": "The upload name is joined onto the uploads directory with no containment check, so '..' steps and absolute paths read arbitrary files into the cache. Resolve the path and require it to stay under the uploads directory.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_path_traversal_build",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_19-v2",
+          "cwe": "CWE-798",
+          "function": "_gallery_key",
+          "line_start": 12,
+          "line_end": 13,
+          "related_lines": [
+            {
+              "function": "ThumbnailCache.signature",
+              "line_start": 51,
+              "line_end": 55
+            }
+          ],
+          "source": "literal default in os.environ.get(\"GALLERY_KEY\", ...)",
+          "sink": "hmac.new(_gallery_key(), ...) in ThumbnailCache.signature",
+          "description": "The URL signing key falls back to a literal when GALLERY_KEY is unset, so deployments that forget the variable sign with a key that is public in source. Read the variable with no default and fail closed.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v2_hardcoded_gallery_key",
+          "expected_fix_risk": "Medium",
+          "regression_note": "Keeping any literal fallback (including an empty string) leaves signatures forgeable; the security test checks the unset case."
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_19-d1",
+          "looks_like": "CWE-327",
+          "function": "ThumbnailCache.cache_name",
+          "line_start": 27,
+          "line_end": 30,
+          "why_safe": "MD5 is called with usedforsecurity=False purely to address cache entries, never for authentication or integrity.",
+          "security_test": "test_security.py::test_d1_cache_name_md5_is_non_security_use"
+        }
+      ]
+    },
+    {
+      "case_id": "case_20_billing_portal",
+      "category": "multi",
+      "context": "Billing portal helpers: invoice lookup by id, staff sign-in and an admin password check",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_20-v1",
+          "cwe": "CWE-327",
+          "function": "hash_password",
+          "line_start": 40,
+          "line_end": 41,
+          "related_lines": [
+            {
+              "function": "add_staff",
+              "line_start": 44,
+              "line_end": 50
+            },
+            {
+              "function": "staff_login",
+              "line_start": 60,
+              "line_end": 64
+            }
+          ],
+          "source": "staff password passed to add_staff and staff_login",
+          "sink": "hashlib.md5(password).hexdigest() stored in the password_hash column",
+          "description": "Staff passwords are stored as bare MD5 digests. Store a salted pbkdf2/scrypt digest instead.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_weak_staff_password_hash",
+          "expected_fix_risk": "Medium"
+        },
+        {
+          "vuln_id": "case_20-v2",
+          "cwe": "CWE-89",
+          "function": "find_invoice",
+          "line_start": 71,
+          "line_end": 76,
+          "source": "invoice_id passed to find_invoice",
+          "sink": "conn.execute() of a WHERE clause with the value interpolated unquoted",
+          "description": "The id is only .strip()ed and then placed unquoted into WHERE id = {}, so a numeric-looking payload such as '1001 OR 1=1' changes the query. Bind it as a ? parameter.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v2_sqli_find_invoice",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_20-v3",
+          "cwe": "CWE-798",
+          "function": "<module>",
+          "line_start": 10,
+          "line_end": 10,
+          "related_lines": [
+            {
+              "function": "admin_login",
+              "line_start": 67,
+              "line_end": 68
+            }
+          ],
+          "source": "ADMIN_PASSWORD string literal",
+          "sink": "hmac.compare_digest(password, ADMIN_PASSWORD) in admin_login",
+          "description": "The admin password is a literal in source. Read it from the environment and deny the login when it is missing.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v3_hardcoded_admin_password",
+          "expected_fix_risk": "Medium",
+          "regression_note": "A fix that falls back to an empty or default password when the variable is unset turns the admin login into a bypass; the security test checks this."
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_21_site_publisher",
+      "context": "Static-site publisher CLI that renders a page slug to HTML, copies it into the output tree and signs deploys",
+      "category": "multi",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_21-v1",
+          "cwe": "CWE-78",
+          "function": "publish_page",
+          "line_start": 56,
+          "line_end": 56,
+          "related_lines": [
+            {
+              "function": "main",
+              "line_start": 84,
+              "line_end": 84
+            }
+          ],
+          "source": "page slug from the CLI positional, which becomes part of both copy paths",
+          "sink": "os.system(f\"cp {staged} {target}\")",
+          "description": "The staged and target paths are f-stringed into a shell command line, so a slug carrying ';' or '$(...)' runs commands. Copy the file with shutil instead of a shell.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_command_execution_publish_page",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_21-v2",
+          "cwe": "CWE-22",
+          "function": "_page_path",
+          "line_start": 21,
+          "line_end": 22,
+          "related_lines": [
+            {
+              "function": "read_page",
+              "line_start": 25,
+              "line_end": 28
+            },
+            {
+              "function": "publish_page",
+              "line_start": 49,
+              "line_end": 49
+            }
+          ],
+          "source": "page slug passed to read_page and publish_page",
+          "sink": "open() on the path returned by the _page_path helper",
+          "description": "The slug is joined onto the site root by a helper with no containment check, so '..' steps and absolute slugs read files outside the site. Resolve the path and require it to stay under the site root.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v2_path_traversal_read_page",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_21-v3",
+          "cwe": "CWE-798",
+          "function": "<module>",
+          "line_start": 11,
+          "line_end": 11,
+          "related_lines": [
+            {
+              "function": "deploy_signature",
+              "line_start": 60,
+              "line_end": 64
+            }
+          ],
+          "source": "deploy_key entry of the DEFAULT_CONFIG dict",
+          "sink": "hmac.new(cfg[\"deploy_key\"], ...) in deploy_signature",
+          "description": "The deploy signing key is a literal in the default config dict. Read it from the environment when the runtime config does not supply one, and fail closed when it is missing.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v3_hardcoded_deploy_key",
+          "expected_fix_risk": "Medium",
+          "regression_note": "A fix that keeps a literal or empty fallback leaves deploy signatures forgeable; the security test checks the unset case."
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_22_clinic_appointments",
+      "category": "multi",
+      "context": "Clinic appointment book with staff sign-in and attachment export",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_22-v1",
+          "cwe": "CWE-89",
+          "function": "ClinicBook.appointments_for",
+          "line_start": 43,
+          "line_end": 47,
+          "source": "patient name passed to appointments_for",
+          "sink": "self.conn.execute() of a SELECT with the name f-stringed into the WHERE clause",
+          "description": "The patient name is f-stringed into the query; bind it as a ? parameter.",
+          "subtlety": "obvious",
+          "security_test": "test_security.py::test_v1_sqli_appointments_for",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_22-v2",
+          "cwe": "CWE-327",
+          "function": "ClinicBook._hash_password",
+          "line_start": 66,
+          "line_end": 70,
+          "related_lines": [
+            {
+              "function": "<module>",
+              "line_start": 10,
+              "line_end": 11
+            },
+            {
+              "function": "ClinicBook.register_staff",
+              "line_start": 72,
+              "line_end": 80
+            },
+            {
+              "function": "ClinicBook.staff_login",
+              "line_start": 88,
+              "line_end": 92
+            }
+          ],
+          "source": "staff password passed to register_staff and staff_login",
+          "sink": "hashlib.pbkdf2_hmac with the module-level STAFF_SALT and 1000 iterations",
+          "description": "pbkdf2 is used with one constant salt shared by every account and only 1000 iterations, so equal passwords collide and the work factor is far too low. Use a per-account random salt and at least 100k iterations.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v2_weak_staff_password_hash",
+          "expected_fix_risk": "Medium"
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_22-d1",
+          "looks_like": "CWE-22",
+          "function": "ClinicBook.export_attachment",
+          "line_start": 94,
+          "line_end": 99,
+          "why_safe": "The path is resolved and required to be relative to the resolved attachments directory before it is read.",
+          "security_test": "test_security.py::test_d1_export_attachment_rejects_traversal"
+        }
+      ]
+    },
+    {
+      "case_id": "case_23_audit_logger",
+      "category": "multi",
+      "context": "Audit event store with a filtered search and a gzip export of the matching events",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_23-v1",
+          "cwe": "CWE-89",
+          "function": "_where",
+          "line_start": 33,
+          "line_end": 38,
+          "related_lines": [
+            {
+              "function": "search",
+              "line_start": 41,
+              "line_end": 45
+            }
+          ],
+          "source": "filter values in the dict passed to search",
+          "sink": "conn.execute() of a WHERE clause joined together by the _where helper",
+          "description": "Filter column names are checked against an allowlist but the values are f-stringed into the clause. Emit placeholders and return the values as bound parameters.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_sqli_search_filters",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_23-v2",
+          "cwe": "CWE-78",
+          "function": "_export_cmd",
+          "line_start": 70,
+          "line_end": 71,
+          "related_lines": [
+            {
+              "function": "export_gzip",
+              "line_start": 74,
+              "line_end": 78
+            }
+          ],
+          "source": "export path and destination passed to export_gzip",
+          "sink": "subprocess.run(..., shell=True) on the gzip command line with a > redirect",
+          "description": "The helper builds 'gzip -c src > dest' for a shell, so either path can carry extra commands. Run gzip with a list of arguments and write its stdout to the destination file.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v2_command_execution_export_gzip",
+          "expected_fix_risk": "Low"
+        }
+      ],
+      "decoys": []
+    },
+    {
+      "case_id": "case_24_config_loader",
+      "category": "multi",
+      "context": "Loader for named configuration profiles that keeps a keyed checksum of each profile",
+      "vulnerabilities": [
+        {
+          "vuln_id": "case_24-v1",
+          "cwe": "CWE-22",
+          "function": "_profile_path",
+          "line_start": 32,
+          "line_end": 33,
+          "related_lines": [
+            {
+              "function": "load_profile",
+              "line_start": 43,
+              "line_end": 46
+            },
+            {
+              "function": "save_profile",
+              "line_start": 49,
+              "line_end": 53
+            }
+          ],
+          "source": "profile name passed to load_profile and save_profile",
+          "sink": "Path.read_text() / write_text() on the path returned by the helper",
+          "description": "The profile name is joined onto the profile directory by a helper with no containment check, so '..' steps and absolute names read or overwrite files elsewhere. Resolve the path and require it to stay under the directory.",
+          "subtlety": "moderate",
+          "security_test": "test_security.py::test_v1_path_traversal_load_profile",
+          "expected_fix_risk": "Low"
+        },
+        {
+          "vuln_id": "case_24-v2",
+          "cwe": "CWE-327",
+          "function": "checksum",
+          "line_start": 24,
+          "line_end": 25,
+          "related_lines": [
+            {
+              "function": "verify_profile",
+              "line_start": 56,
+              "line_end": 58
+            }
+          ],
+          "source": "canonical profile JSON passed to checksum",
+          "sink": "hmac.new(key, data, \"md5\") used as the integrity check",
+          "description": "The integrity MAC is HMAC over MD5, a broken hash. Keep the HMAC construction but move it to SHA-256.",
+          "subtlety": "subtle",
+          "security_test": "test_security.py::test_v2_weak_integrity_mac",
+          "expected_fix_risk": "Medium",
+          "regression_note": "Checksums recorded by the old digest stop matching after the change; the functional oracle only compares checksums this module produced."
+        }
+      ],
+      "decoys": [
+        {
+          "decoy_id": "case_24-d1",
+          "looks_like": "CWE-798",
+          "function": "_hmac_key",
+          "line_start": 20,
+          "line_end": 21,
+          "why_safe": "The key is read from the environment on each call with no literal default, so it raises when the variable is missing.",
+          "security_test": "test_security.py::test_d1_hmac_key_from_env_and_fails_closed"
+        }
+      ]
+    },
+    {
+      "case_id": "case_25_user_settings",
+      "category": "clean",
+      "context": "Per-user preference store in SQLite with ETags and HMAC-signed export/import bundles",
+      "vulnerabilities": [],
+      "decoys": [
+        {
+          "decoy_id": "case_25-d1",
+          "looks_like": "CWE-89",
+          "function": "SettingsStore.get_all",
+          "line_start": 33,
+          "line_end": 35,
+          "related_lines": [
+            {
+              "function": "SettingsStore.reset",
+              "line_start": 44,
+              "line_end": 44
+            }
+          ],
+          "why_safe": "Only the module constant SETTINGS_TABLE is f-stringed; user_id is a bound parameter.",
+          "security_test": "test_security.py::test_d1_settings_queries_not_injectable"
+        },
+        {
+          "decoy_id": "case_25-d2",
+          "looks_like": "CWE-327",
+          "function": "SettingsStore.etag",
+          "line_start": 48,
+          "line_end": 49,
+          "why_safe": "MD5 is used with usedforsecurity=False only as a cache-validation ETag, never for authentication.",
+          "security_test": "test_security.py::test_d2_etag_md5_is_non_security_use"
+        },
+        {
+          "decoy_id": "case_25-d3",
+          "looks_like": "CWE-798",
+          "function": "_export_key",
+          "line_start": 53,
+          "line_end": 56,
+          "why_safe": "The signing key is read from the environment and the function raises if it is missing.",
+          "security_test": "test_security.py::test_d3_export_key_from_env_and_fails_closed"
+        }
+      ]
+    },
+    {
+      "case_id": "case_26_system_info",
+      "category": "clean",
+      "context": "Host information reporter CLI that shells out to uname and df and can write a report file",
+      "vulnerabilities": [],
+      "decoys": [
+        {
+          "decoy_id": "case_26-d1",
+          "looks_like": "CWE-78",
+          "function": "kernel_line",
+          "line_start": 12,
+          "line_end": 16,
+          "why_safe": "uname is run with a fixed list of arguments and shell=False; no input reaches it.",
+          "security_test": "test_security.py::test_d1_kernel_line_uses_no_shell"
+        },
+        {
+          "decoy_id": "case_26-d2",
+          "looks_like": "CWE-78",
+          "function": "free_kilobytes",
+          "line_start": 19,
+          "line_end": 25,
+          "why_safe": "shell=True is used, but the only variable is passed through shlex.quote and is not wrapped in further quotes, so the shell sees one literal argument.",
+          "security_test": "test_security.py::test_d2_free_kilobytes_quotes_its_argument"
+        },
+        {
+          "decoy_id": "case_26-d3",
+          "looks_like": "CWE-22",
+          "function": "write_report",
+          "line_start": 44,
+          "line_end": 51,
+          "why_safe": "The report path is resolved and required to be relative to the resolved base directory before it is written.",
+          "security_test": "test_security.py::test_d3_write_report_stays_under_base"
+        }
+      ]
+    },
+    {
+      "case_id": "case_27_document_vault",
+      "category": "clean",
+      "context": "Per-user document storage with password-protected shares, backed by SQLite and a vault folder",
+      "vulnerabilities": [],
+      "decoys": [
+        {
+          "decoy_id": "case_27-d1",
+          "looks_like": "CWE-22",
+          "function": "DocumentVault._locate",
+          "line_start": 30,
+          "line_end": 35,
+          "why_safe": "The path is resolved and required to be relative to the resolved owner folder, so '..' steps and absolute names are rejected.",
+          "security_test": "test_security.py::test_d1_locate_stays_under_owner_folder"
+        },
+        {
+          "decoy_id": "case_27-d2",
+          "looks_like": "CWE-327",
+          "function": "DocumentVault._hash_share_password",
+          "line_start": 37,
+          "line_end": 41,
+          "why_safe": "Share passwords use pbkdf2_hmac over SHA-256 with a per-document os.urandom salt and 240k iterations.",
+          "security_test": "test_security.py::test_d2_share_password_uses_slow_salted_kdf"
+        },
+        {
+          "decoy_id": "case_27-d3",
+          "looks_like": "CWE-89",
+          "function": "DocumentVault.store",
+          "line_start": 52,
+          "line_end": 67,
+          "related_lines": [
+            {
+              "function": "DocumentVault.documents_for",
+              "line_start": 81,
+              "line_end": 86
+            }
+          ],
+          "why_safe": "Only the module constant DOCUMENTS is f-stringed into the statements; owner, name and sizes are bound parameters.",
+          "security_test": "test_security.py::test_d3_document_queries_not_injectable"
+        }
+      ]
+    },
+    {
+      "case_id": "case_28_session_tokens",
+      "category": "clean",
+      "context": "Signed session tokens with issue, verify and renew helpers plus a session-store shard key",
+      "vulnerabilities": [],
+      "decoys": [
+        {
+          "decoy_id": "case_28-d1",
+          "looks_like": "CWE-798",
+          "function": "_session_secret",
+          "line_start": 15,
+          "line_end": 16,
+          "why_safe": "The signing secret is read from the environment on each call with no literal default, so it raises when the variable is missing.",
+          "security_test": "test_security.py::test_d1_session_secret_from_env_and_fails_closed"
+        },
+        {
+          "decoy_id": "case_28-d2",
+          "looks_like": "CWE-327",
+          "function": "_sign",
+          "line_start": 27,
+          "line_end": 28,
+          "related_lines": [
+            {
+              "function": "verify",
+              "line_start": 46,
+              "line_end": 52
+            }
+          ],
+          "why_safe": "Tokens are signed with hmac over SHA-256 and compared with hmac.compare_digest.",
+          "security_test": "test_security.py::test_d2_token_mac_is_keyed_and_constant_time"
+        },
+        {
+          "decoy_id": "case_28-d3",
+          "looks_like": "CWE-327",
+          "function": "shard_for",
+          "line_start": 75,
+          "line_end": 78,
+          "why_safe": "MD5 is called with usedforsecurity=False purely to pick a storage shard, never for authentication or integrity.",
+          "security_test": "test_security.py::test_d3_shard_md5_is_non_security_use"
+        }
+      ]
+    },
+    {
+      "case_id": "case_29_csv_importer",
+      "category": "clean",
+      "context": "Argparse CLI that imports CSV rows into one of the known report tables in SQLite",
+      "vulnerabilities": [],
+      "decoys": [
+        {
+          "decoy_id": "case_29-d1",
+          "looks_like": "CWE-89",
+          "function": "row_count",
+          "line_start": 54,
+          "line_end": 56,
+          "related_lines": [
+            {
+              "function": "_table",
+              "line_start": 23,
+              "line_end": 27
+            },
+            {
+              "function": "sample",
+              "line_start": 59,
+              "line_end": 64
+            },
+            {
+              "function": "clear",
+              "line_start": 67,
+              "line_end": 69
+            }
+          ],
+          "why_safe": "The table name is f-stringed, but only after _table() has resolved it against the TABLES allowlist, so it is always one of two fixed identifiers.",
+          "security_test": "test_security.py::test_d1_table_name_comes_from_the_allowlist"
+        },
+        {
+          "decoy_id": "case_29-d2",
+          "looks_like": "CWE-89",
+          "function": "import_rows",
+          "line_start": 30,
+          "line_end": 40,
+          "related_lines": [
+            {
+              "function": "import_csv",
+              "line_start": 44,
+              "line_end": 51
+            }
+          ],
+          "why_safe": "Row values go through executemany with one placeholder per column; only the allowlisted table and its own column names are interpolated.",
+          "security_test": "test_security.py::test_d2_row_values_are_bound_parameters"
+        }
+      ]
+    },
+    {
+      "case_id": "case_30_job_runner",
+      "category": "clean",
+      "context": "Maintenance job runner that executes fixed argv lists from a registry and logs each run",
+      "vulnerabilities": [],
+      "decoys": [
+        {
+          "decoy_id": "case_30-d1",
+          "looks_like": "CWE-78",
+          "function": "run_job",
+          "line_start": 39,
+          "line_end": 44,
+          "related_lines": [
+            {
+              "function": "run_and_log",
+              "line_start": 63,
+              "line_end": 66
+            }
+          ],
+          "why_safe": "The job name only indexes the JOBS registry, which holds fixed argument lists; an unknown name raises KeyError and nothing is run through a shell.",
+          "security_test": "test_security.py::test_d1_job_argv_comes_from_the_registry"
+        },
+        {
+          "decoy_id": "case_30-d2",
+          "looks_like": "CWE-22",
+          "function": "log_path",
+          "line_start": 47,
+          "line_end": 52,
+          "related_lines": [
+            {
+              "function": "write_log",
+              "line_start": 55,
+              "line_end": 60
+            }
+          ],
+          "why_safe": "The log path is resolved and required to be relative to the resolved log directory before anything is written.",
+          "security_test": "test_security.py::test_d2_log_path_stays_under_log_dir"
+        }
+      ]
+    }
+  ]
+}
