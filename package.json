@@ -19,7 +19,7 @@
       {
         "command": "aiEvaluator.analyzeForVulnerabilities",
         "title": "AI Evaluator: Analyze for Vulnerabilities",
-        "icon": "media/ai-evaluator.svg"
+        "icon": "media/logoSide.png"
       }
     ],
     "viewsContainers": {
@@ -27,7 +27,7 @@
         {
           "id": "aiEvaluator",
           "title": "AI Evaluator",
-          "icon": "media/ai-evaluator.svg"
+          "icon": "media/logoSide.png"
         }
       ]
     },
@@ -36,7 +36,7 @@
         {
           "id": "aiEvaluator.analyze",
           "name": "Analyze",
-          "icon": "media/ai-evaluator.svg"
+          "icon": "media/logoSide.png"
         }
       ]
     },
