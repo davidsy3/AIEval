@@ -18,7 +18,7 @@
     "commands": [
       {
         "command": "aiEvaluator.analyzeForVulnerabilities",
-        "title": "AI Evaluator: Analyze for Vulnerabilities",
+        "title": "NerdGoose",
         "icon": "media/logoSide.png"
       }
     ],
@@ -26,7 +26,7 @@
       "activitybar": [
         {
           "id": "aiEvaluator",
-          "title": "AI Evaluator",
+          "title": "NerdGoose",
           "icon": "media/logoSide.png"
         }
       ]
@@ -35,7 +35,7 @@
       "aiEvaluator": [
         {
           "id": "aiEvaluator.analyze",
-          "name": "Analyze",
+          "name": "",
           "icon": "media/logoSide.png"
         }
       ]
