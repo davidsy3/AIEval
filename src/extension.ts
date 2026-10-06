@@ -16,6 +16,13 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(disposable);
 
+	// Empty provider so the view renders its viewsWelcome button rather than a "no data provider" error.
+	const emptyProvider: vscode.TreeDataProvider<vscode.TreeItem> = {
+		getTreeItem: (element) => element,
+		getChildren: () => [],
+	};
+	context.subscriptions.push(vscode.window.registerTreeDataProvider('aiEvaluator.analyze', emptyProvider));
+
 	if (context.extensionMode === vscode.ExtensionMode.Development) {
 		void openDevTestFile(context);
 	}
