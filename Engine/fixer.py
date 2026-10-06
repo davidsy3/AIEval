@@ -31,8 +31,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-from dotenv import load_dotenv
+try:
+    import anthropic
+except ImportError:
+    anthropic = None
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(path):
+        return False
 
 # Load ANTHROPIC_API_KEY from engine/.env regardless of where the script is run from.
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -134,10 +141,12 @@ def analyze_code(code: str, path: str = "<in-memory>") -> tuple[str, str]:
     benchmark script can call it directly on test-case strings with no file I/O.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set -- copy engine/.env.example to engine/.env "
-            "and paste your key."
-        )
+        from local_analyzer import analyze_local
+        print("[mode] Local static checks (no API key). Findings require review; no automatic fixes are generated.", file=sys.stderr)
+        return analyze_local(code, path), "end_turn"
+
+    if anthropic is None:
+        raise RuntimeError("Install Engine/requirements.txt to use Anthropic analysis.")
 
     nonce = secrets.token_hex(8)
     while nonce in code:
@@ -229,6 +238,8 @@ if __name__ == "__main__":
         sys.exit(1)
     try:
         fix_file(sys.argv[1])
-    except anthropic.AuthenticationError:
+    except Exception as error:
+        if anthropic is None or not isinstance(error, anthropic.AuthenticationError):
+            raise
         print("Invalid or missing API key -- set ANTHROPIC_API_KEY in engine/.env", file=sys.stderr)
         sys.exit(1)

@@ -18,7 +18,24 @@ The output has five sections:
 * **D. Fixed code:** the full corrected file
 * **E. Propose to human:** anything the model chose not to fix automatically
 
-## Prerequisites
+## Running without an API key
+
+When `ANTHROPIC_API_KEY` is absent, the same command runs local Python AST checks:
+
+```bash
+python3 fixer.py testfile.py
+```
+
+This mode needs only Python, does not execute the source file or call a remote service,
+and reports potential hard-coded credentials, SQL string interpolation at execution
+calls, shell execution, weak hashes, and variable path joins passed to `open`.
+These are limited pattern checks, not complete data-flow analysis or proof of an
+exploitable vulnerability. Review each finding. Local mode writes the usual report
+but does not generate fixed code. Terminal output and the Webview label this mode.
+
+With an API key configured, the existing Anthropic analysis remains in use.
+
+## Prerequisites (Anthropic mode)
 
 * Python 3.10 or newer
 * An Anthropic API key from [console.anthropic.com](https://console.anthropic.com/)

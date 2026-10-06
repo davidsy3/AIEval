@@ -17,6 +17,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "aiEvaluator.open",
+        "title": "AI Evaluator: Open"
+      },
+      {
         "command": "aiEvaluator.analyzeForVulnerabilities",
         "title": "NerdGoose",
         "icon": "media/logoSide.png"
