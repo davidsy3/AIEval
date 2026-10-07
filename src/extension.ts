@@ -5,9 +5,10 @@ import { spawn } from 'child_process';
 import { parseFindings, SecurityFinding, webviewHtml } from './webview';
 
 let outputChannel: vscode.OutputChannel;
+let diagnostics: vscode.DiagnosticCollection;
 let panel: vscode.WebviewPanel | undefined;
 let currentDocument: vscode.TextDocument | undefined;
-let state: { file?: string; busy: boolean; findings?: SecurityFinding[]; error?: string; errorTitle?: string; note?: string } = { busy: false };
+let state: { file?: string; analyzedFile?: string; analyzedPath?: string; busy: boolean; findings?: SecurityFinding[]; error?: string; errorTitle?: string; note?: string } = { busy: false };
 
 function publish() {
 	void panel?.webview.postMessage(state);
@@ -31,6 +32,8 @@ function openEvaluator(context: vscode.ExtensionContext) {
 export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('AI Evaluator');
 	context.subscriptions.push(outputChannel);
+	diagnostics = vscode.languages.createDiagnosticCollection('aiEvaluator');
+	context.subscriptions.push(diagnostics, vscode.workspace.onDidChangeTextDocument(updateDiagnosticsForEdit));
 
 	const disposable = vscode.commands.registerCommand(
 		'aiEvaluator.analyzeForVulnerabilities',
@@ -46,7 +49,8 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!editor) { return; }
 			currentDocument = editor.document;
 			if (!state.busy) {
-				state = { busy: false, file: path.basename(currentDocument.uri.fsPath) };
+				// Keep the last analysis; only the file the next run will target changes.
+				state = { ...state, file: path.basename(currentDocument.uri.fsPath) };
 				publish();
 			}
 		}),
@@ -82,7 +86,7 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 	const document = vscode.window.activeTextEditor?.document || currentDocument;
 	openEvaluator(context);
 	const fail = (message: string, title = 'Unable to analyze file') => {
-		state = { busy: false, file: document && path.basename(document.uri.fsPath), error: message, errorTitle: title };
+		state = { busy: false, file: document && path.basename(document.uri.fsPath), analyzedFile: document && path.basename(document.uri.fsPath), analyzedPath: document?.uri.fsPath, error: message, errorTitle: title };
 		publish();
 	};
 
@@ -119,8 +123,10 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 	const pythonPath = resolvePythonExecutable(engineDir);
 	const filePath = document.uri.fsPath;
 
-	state = { busy: true, file: path.basename(filePath), note: document.isDirty ? 'Results reflect the saved file on disk; unsaved changes were not analyzed.' : undefined };
+	state = { busy: true, file: path.basename(filePath), analyzedFile: path.basename(filePath), analyzedPath: filePath, note: document.isDirty ? 'Results reflect the saved file on disk; unsaved changes were not analyzed.' : undefined };
 	publish();
+	// A re-run replaces earlier results; a failed run leaves none.
+	diagnostics.delete(document.uri);
 
 	outputChannel.clear();
 
@@ -158,10 +164,11 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 							try {
 								// Read the report the engine already saves, avoiding its echoed source code.
 								const reportPath = /^\[saved\] Report: (.+)$/m.exec(stderr)?.[1].trim();
-								if (!reportPath || path.dirname(path.resolve(reportPath)) !== path.join(engineDir, 'output') || stderr.includes('[warning]')) {
+								if (!reportPath || !samePath(path.dirname(path.resolve(reportPath)), path.join(engineDir, 'output')) || stderr.includes('[warning]')) {
 									throw new Error('The Python analysis engine returned an invalid or incomplete report. See the output panel for details.');
 								}
 								state.findings = parseFindings(fs.readFileSync(reportPath, 'utf8'), path.basename(filePath));
+								showDiagnostics(document, state.findings);
 								const mode = /^\[mode\] (.+)$/m.exec(stderr)?.[1];
 								if (mode) { state.note = [state.note, mode].filter(Boolean).join(' '); }
 							} catch (error) {
@@ -189,6 +196,52 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 		state.busy = false;
 		publish();
 	}
+}
+
+function showDiagnostics(document: vscode.TextDocument, findings: SecurityFinding[]) {
+	const items = findings.flatMap(finding => {
+		// Report lines are 1-based; skip findings without a usable line.
+		if (!finding.line || finding.line > document.lineCount) { return []; }
+		// Clamp ranges that end before they start or past the end of the file.
+		const endLine = Math.min(Math.max(finding.endLine ?? finding.line, finding.line), document.lineCount);
+		const first = document.lineAt(finding.line - 1);
+		const last = document.lineAt(endLine - 1);
+		const range = new vscode.Range(first.lineNumber, first.firstNonWhitespaceCharacterIndex, last.lineNumber, last.range.end.character);
+		const diagnostic = new vscode.Diagnostic(range, `${finding.type}\n\n${finding.description}`, vscode.DiagnosticSeverity.Warning);
+		diagnostic.source = 'NerdGoose';
+		return [diagnostic];
+	});
+	diagnostics.set(document.uri, items);
+}
+
+// Drop findings on edited lines and move the rest with inserted or deleted lines.
+function updateDiagnosticsForEdit(event: vscode.TextDocumentChangeEvent) {
+	let items = diagnostics.get(event.document.uri);
+	if (!items?.length || !event.contentChanges.length) { return; }
+
+	// Change ranges refer to the document before the edit, so apply them bottom-up.
+	const changes = [...event.contentChanges].sort((a, b) => b.range.start.compareTo(a.range.start));
+	for (const change of changes) {
+		const { start, end } = change.range;
+		const delta = change.text.split('\n').length - 1 - (end.line - start.line);
+		items = items.flatMap(item => {
+			if (item.range.end.line < start.line) { return [item]; }
+			// The edit touches at least one line of this finding's range.
+			if (item.range.start.line <= end.line) { return []; }
+			if (delta === 0) { return [item]; }
+			const moved = new vscode.Diagnostic(
+				new vscode.Range(item.range.start.translate(delta), item.range.end.translate(delta)),
+				item.message, item.severity);
+			moved.source = item.source;
+			return [moved];
+		});
+	}
+	diagnostics.set(event.document.uri, items);
+}
+
+// Windows paths are case-insensitive, and VS Code reports the drive letter in lowercase while Python uses uppercase.
+function samePath(a: string, b: string): boolean {
+	return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function resolvePythonExecutable(engineDir: string): string {
