@@ -59,8 +59,11 @@ Known gaps
 - The re-scan is count-based per CWE, so a fix that silences a DECOY instead of
   the real flaw also scores as "clear", and removing two of three sites scores
   as "clear" with one left.
-- The baseline is re-run on every attempt (3x per case worst case). It is a
-  second or two, but it is waste.
+- The baseline runs once per case and is reused by later attempts (see
+  _BASELINES). A stored baseline is reused only when the original code matches
+  and `test_functional.py` still exists; it checks that the test file EXISTS,
+  not what it says, so an edited test file under the same case_id and code
+  reuses a stale baseline. A timed-out baseline is never stored.
 - `test_v*` / `test_d*` prefixes come from `cfg`, but they are a dataset naming
   convention: a case set that names its tests differently silently yields
   `security_verdict = None` and falls back to the weak re-scan.
@@ -98,6 +101,21 @@ def _subprocess_env(**overrides: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not _SECRET_ENV.search(k)}
     env.update(overrides)
     return env
+
+# case_id -> (original code, completed baseline run). The baseline depends only
+# on the original file, so attempts 2 and 3 reuse attempt 1's instead of running
+# the same tests again. Lives as long as the process: one run.py run.
+_BASELINES: dict[str, tuple[str, TestRun]] = {}
+
+
+def _cached_baseline(case: Case) -> TestRun | None:
+    """The stored baseline for this case, or None if it must be (re)run."""
+    entry = _BASELINES.get(case.case_id)
+    if entry is None or not (case.path / "test_functional.py").is_file():
+        return None
+    code, baseline = entry
+    return baseline if code == case.code else None
+
 
 BANNER = (
     "[stage 4] WARNING: running untrusted test code with no isolation "
@@ -214,8 +232,15 @@ def verify(case: Case, fix: Fix, cfg: Config = CONFIG) -> SafetyResult:
         shutil.copytree(case.path, workdir, ignore=IGNORE)
 
         # 1. baseline on the ORIGINAL code: "passed before" is defined here.
-        (workdir / "app.py").write_text(case.code, encoding="utf-8")
-        result.functional_baseline = _run_pytest(workdir, "test_functional.py", cfg)
+        #    Run once per case; a run that did not complete is not kept, so the
+        #    next attempt tries again.
+        baseline = _cached_baseline(case)
+        if baseline is None:
+            (workdir / "app.py").write_text(case.code, encoding="utf-8")
+            baseline = _run_pytest(workdir, "test_functional.py", cfg)
+            if baseline.ran and not baseline.timed_out:
+                _BASELINES[case.case_id] = (case.code, baseline)
+        result.functional_baseline = baseline
 
         # 2. swap in the fix and re-run the same tests.
         (workdir / "app.py").write_text(fix.fixed_code, encoding="utf-8")

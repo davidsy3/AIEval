@@ -8,7 +8,7 @@ the stage.
 import pytest
 
 from config import CONFIG, Config
-from models import Fix
+from models import Fix, TestRun
 from stages.safety import verify
 from fakes import (BROKEN_APP, FIXED_APP, SYNTAX_ERROR_APP, VULNERABLE_APP,
                    make_case)
@@ -130,6 +130,62 @@ def test_an_infinite_loop_is_killed_by_the_timeout(tmp_path):
     result = verify(case, fix_for(case, spin), Config(test_timeout=5))
     assert result.functional_after.timed_out is True
     assert result.ok is False
+
+
+# --- the baseline runs once per case -----------------------------------------
+
+@pytest.fixture
+def functional_runs(monkeypatch):
+    """Empty baseline store, and the app.py of every test_functional.py run, in order."""
+    from stages import safety
+    monkeypatch.setattr(safety, "_BASELINES", {})
+    runs = []
+    real_run_pytest = safety._run_pytest
+
+    def recording(workdir, test_file, cfg):
+        if test_file == "test_functional.py":
+            runs.append((workdir / "app.py").read_text(encoding="utf-8"))
+        return real_run_pytest(workdir, test_file, cfg)
+
+    monkeypatch.setattr(safety, "_run_pytest", recording)
+    return runs
+
+
+def test_the_baseline_is_reused_by_later_attempts(tmp_path, functional_runs):
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    first = verify(case, fix_for(case, BROKEN_APP, attempt=1), CONFIG)
+    second = verify(case, fix_for(case, FIXED_APP, attempt=2), CONFIG)
+    # attempt 1: baseline + fix; attempt 2: fix only
+    assert functional_runs == [VULNERABLE_APP, BROKEN_APP, FIXED_APP]
+    assert second.functional_baseline.per_test == first.functional_baseline.per_test
+    assert first.regressions and second.regressions == []
+
+
+def test_same_case_id_with_different_code_runs_its_own_baseline(tmp_path, functional_runs):
+    case = make_case(tmp_path / "a", code=VULNERABLE_APP)
+    other = make_case(tmp_path / "b", code=BROKEN_APP)     # same case_id
+    verify(case, fix_for(case, FIXED_APP), CONFIG)
+    result = verify(other, fix_for(other, BROKEN_APP), CONFIG)
+    assert functional_runs == [VULNERABLE_APP, FIXED_APP, BROKEN_APP, BROKEN_APP]
+    assert not result.functional_baseline.passed
+
+
+def test_a_timed_out_baseline_is_not_reused(tmp_path, monkeypatch, functional_runs):
+    from stages import safety
+    recording = safety._run_pytest
+
+    def baseline_times_out(workdir, test_file, cfg):
+        result = recording(workdir, test_file, cfg)
+        if (workdir / "app.py").read_text(encoding="utf-8") == VULNERABLE_APP:
+            return TestRun(ran=True, timed_out=True, returncode=-9)
+        return result
+
+    monkeypatch.setattr(safety, "_run_pytest", baseline_times_out)
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    verify(case, fix_for(case, FIXED_APP, attempt=1), CONFIG)
+    verify(case, fix_for(case, FIXED_APP, attempt=2), CONFIG)
+    assert functional_runs == [VULNERABLE_APP, FIXED_APP, VULNERABLE_APP, FIXED_APP]
+    assert safety._BASELINES == {}
 
 
 # --- the environment handed to untrusted code --------------------------------
