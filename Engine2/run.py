@@ -6,6 +6,7 @@ CLI: run the whole pipeline over a dataset and print the three numbers.
     python run.py ../dataset --offline       # free: no API calls at all
     python run.py ../dataset --case case_01_inventory_lookup --case case_13_member_login
     python run.py ../dataset --offline --ast # add the stage-1 AST supplement
+    python run.py ../dataset --offline --allow-unisolated   # no Docker: run stage-4 tests as you
 
 Saves the full run (findings, explanations, fixes, test output, decisions) to
 results/run_<timestamp>.json.
@@ -36,6 +37,7 @@ from llm import PreflightError, build_llm, preflight
 from models import CaseResult
 from orchestrator import run_cases
 from stages.decide import score
+from stages.safety import SandboxUnavailable, sandbox_preflight
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -100,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="run only this case (repeatable)")
     parser.add_argument("--limit", type=int, help="run only the first N cases")
     parser.add_argument("--model", help=f"override the model id (default {CONFIG.model})")
+    parser.add_argument("--allow-unisolated", action="store_true",
+                        help="without Docker, run stage-4 tests as YOU with no isolation "
+                             "(only on cases you have read)")
     args = parser.parse_args(argv)
 
     cfg = dataclasses.replace(
@@ -107,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         offline=args.offline,
         use_ast_supplement=args.ast,
         model=args.model or CONFIG.model,
+        allow_unisolated=args.allow_unisolated or CONFIG.allow_unisolated,
     )
 
     cases = load_cases(args.cases_dir, cfg)
@@ -130,10 +136,17 @@ def main(argv: list[str] | None = None) -> int:
     except PreflightError as error:
         print(f"\n[!] PREFLIGHT FAILED -- nothing was run.\n\n{error}", file=sys.stderr)
         return 2
+    try:
+        isolation = sandbox_preflight(cfg)
+    except SandboxUnavailable as error:
+        print(f"\n[!] STAGE 4 SANDBOX UNAVAILABLE -- nothing was run.\n\n{error}",
+              file=sys.stderr)
+        return 3
 
     print(f"[run] {len(cases)} case(s) | "
           f"{'OFFLINE' if llm.offline else 'model ' + cfg.model} | "
           f"stage 1: bandit{' + ast' if cfg.use_ast_supplement else ''} | "
+          f"stage 4: {isolation} | "
           f"max {cfg.max_repair_attempts} repair attempt(s)", file=sys.stderr)
 
     def progress(result: CaseResult) -> None:
@@ -156,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             "offline": cfg.offline,
             "model": None if llm.offline else cfg.model,
             "ast_supplement": cfg.use_ast_supplement,
+            "stage4_isolation": isolation,
             "max_repair_attempts": cfg.max_repair_attempts,
             "line_tolerance": cfg.line_tolerance,
             "llm_calls": llm.calls,

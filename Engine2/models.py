@@ -163,6 +163,7 @@ class TestRun:
     timed_out: bool = False
     per_test: dict[str, bool] = field(default_factory=dict)
     output: str = ""
+    isolated: bool = False         # ran inside the stage-4 Docker sandbox
 
     @property
     def passing_names(self) -> set[str]:

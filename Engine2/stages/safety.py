@@ -2,28 +2,26 @@ r"""
 STAGE 4 -- SAFETY NET
 =====================
 
-!!!  WARNING: THIS STAGE EXECUTES UNTRUSTED CODE WITH NO ISOLATION  !!!
-!!!                                                                  !!!
-!!!  It runs pytest, in a subprocess, on (a) dataset code written to !!!
-!!!  be vulnerable and (b) code an LLM just generated. That code runs !!!
-!!!  as YOUR user, with YOUR filesystem and YOUR network. The only   !!!
-!!!  things between it and your machine are a temp directory, a       !!!
-!!!  timeout, and a stripped environment (secret-looking variables    !!!
-!!!  are removed -- see _subprocess_env). A case that calls           !!!
-!!!  `rm -rf ~`, reads ~/.ssh, or posts your files to a server would  !!!
-!!!  simply succeed. Removing env vars stops ONE leak, not the rest.  !!!
-!!!                                                                  !!!
-!!!  THIS OWNER'S FIRST JOB: move this execution into a container     !!!
-!!!  with no network, a read-only mount of everything outside the     !!!
-!!!  work dir, a non-root user, a memory/CPU cap and a hard kill      !!!
-!!!  timeout. Until then, only run this stage on dataset cases you    !!!
-!!!  have read, on a machine you are willing to lose.                 !!!
+!!!  THIS STAGE EXECUTES UNTRUSTED CODE                                 !!!
+!!!                                                                    !!!
+!!!  It runs pytest on (a) dataset code written to be vulnerable and    !!!
+!!!  (b) code an LLM just generated. Each pytest run happens in a       !!!
+!!!  Docker container (sandbox/Dockerfile, flags in _docker_command):   !!!
+!!!  no network, only the case's *.py files mounted read-only, a        !!!
+!!!  64 MB scratch /tmp, a non-root user, memory/CPU/process caps and   !!!
+!!!  a 60 s kill. Nothing else from your machine is visible inside.     !!!
+!!!                                                                    !!!
+!!!  Without Docker this stage REFUSES to run, unless you opt in with   !!!
+!!!  --allow-unisolated / AIEVAL_ALLOW_UNISOLATED=1. Then the code runs !!!
+!!!  as YOUR user, with YOUR files and YOUR network, and a case that    !!!
+!!!  reads ~/.ssh or posts your files to a server simply succeeds.      !!!
+!!!  Only opt in on dataset cases you have read.                        !!!
 
 Job
 ---
 Decide, WITHOUT ASKING A MODEL ANYTHING, whether a fix is good:
 
-  1. copy the case folder to a temp dir (oracles, conftest and all);
+  1. copy the case's *.py files to a temp dir (oracles, conftest and all);
   2. run `test_functional.py` against the ORIGINAL app.py  -> baseline;
   3. swap in the fixed code as app.py;
   4. run `test_functional.py` again                        -> after;
@@ -47,9 +45,15 @@ Owns the number: REGRESSION RATE.
 
 Known gaps
 ----------
-- NO ISOLATION (see the banner). This is the single biggest risk in the repo.
-  Secret-looking environment variables are stripped from the test subprocess,
-  which stops the API key leaking into code we run, and nothing else.
+- The sandbox is a container, not a VM: it shares the host kernel. It also
+  protects your machine, not the verdict: the code under test runs inside the
+  pytest process that writes /out/report.xml, so it can forge its own results.
+- Only *.py files are copied into the run (no symlinks, no hidden folders). A
+  case that needs a data file (.csv, .json) will not find it.
+- The container path is not exercised without Docker: the one real-container
+  test is skipped on machines that have no Docker or no `aieval-sandbox` image.
+- With --allow-unisolated there is NO ISOLATION (see the banner). Secret-looking
+  environment variables are stripped, and nothing else.
 - `vuln_gone` uses the security oracle (`test_v*`) when the case has one, and
   falls back to the re-scan only when it does not. THE RE-SCAN FALLBACK IS WEAK:
   Bandit's B608 fires on a parameterized query too, so for CWE-89 it reports the
@@ -59,8 +63,11 @@ Known gaps
 - The re-scan is count-based per CWE, so a fix that silences a DECOY instead of
   the real flaw also scores as "clear", and removing two of three sites scores
   as "clear" with one left.
-- The baseline is re-run on every attempt (3x per case worst case). It is a
-  second or two, but it is waste.
+- The baseline runs once per case and is reused by later attempts (see
+  _BASELINES). A stored baseline is reused only when the original code matches
+  and `test_functional.py` still exists; it checks that the test file EXISTS,
+  not what it says, so an edited test file under the same case_id and code
+  reuses a stale baseline. A timed-out baseline is never stored.
 - `test_v*` / `test_d*` prefixes come from `cfg`, but they are a dataset naming
   convention: a case set that names its tests differently silently yields
   `security_verdict = None` and falls back to the weak re-scan.
@@ -76,6 +83,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -83,7 +91,32 @@ from config import CONFIG, Config
 from models import Case, Finding, Fix, SafetyResult, TestRun
 from stages.detect import detect_code
 
-IGNORE = shutil.ignore_patterns("__pycache__", ".pytest_cache", "*.pyc", ".venv")
+
+class SandboxUnavailable(RuntimeError):
+    """Docker cannot run the tests and unisolated runs were not opted into."""
+
+
+# Only these files are copied into a test run. An allowlist, not a blocklist:
+# secrets live in .env, .env.local, credentials, id_rsa ... and names nobody
+# predicted, and none of them end in .py. Symlinks are never followed (a link
+# named app_data.py could point at ~/.ssh/id_rsa), hidden folders never copied.
+ALLOWED_SUFFIXES = (".py",)
+SKIPPED_DIRS = {"__pycache__", ".pytest_cache", ".venv", ".git"}
+
+
+def _allowlist(directory: str, names: list[str]) -> set[str]:
+    """shutil.copytree `ignore` callback: the names in `directory` NOT to copy."""
+    ignored = set()
+    for name in names:
+        path = Path(directory) / name
+        if path.is_symlink():
+            ignored.add(name)
+        elif path.is_dir():
+            if name in SKIPPED_DIRS or name.startswith("."):
+                ignored.add(name)
+        elif not name.endswith(ALLOWED_SUFFIXES):
+            ignored.add(name)
+    return ignored
 
 # Secret-looking variables are stripped before the environment is handed to the
 # code we are about to run. ANTHROPIC_API_KEY is the one that matters here: the
@@ -99,18 +132,157 @@ def _subprocess_env(**overrides: str) -> dict[str, str]:
     env.update(overrides)
     return env
 
+# case_id -> (original code, completed baseline run). The baseline depends only
+# on the original file, so attempts 2 and 3 reuse attempt 1's instead of running
+# the same tests again. Lives as long as the process: one run.py run.
+_BASELINES: dict[str, tuple[str, TestRun]] = {}
+
+
+def _cached_baseline(case: Case) -> TestRun | None:
+    """The stored baseline for this case, or None if it must be (re)run."""
+    entry = _BASELINES.get(case.case_id)
+    if entry is None or not (case.path / "test_functional.py").is_file():
+        return None
+    code, baseline = entry
+    return baseline if code == case.code else None
+
+
 BANNER = (
-    "[stage 4] WARNING: running untrusted test code with no isolation "
-    "(temp dir + timeout only). See stages/safety.py."
+    "[stage 4] WARNING: Docker sandbox unavailable ({problem}). Running untrusted "
+    "test code UNISOLATED because unisolated runs were opted into. See stages/safety.py."
 )
+_warned_unisolated = False
+
+# image -> "" when Docker can run it, else what is wrong. Checked once per process.
+_DOCKER_PROBLEM: dict[str, str] = {}
+
+
+def _docker_problem(cfg: Config) -> str:
+    """Empty string when the sandbox image is ready to run, else why it is not."""
+    if cfg.sandbox_image not in _DOCKER_PROBLEM:
+        try:
+            proc = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", cfg.sandbox_image],
+                capture_output=True, text=True, timeout=30,
+            )
+            problem = "" if proc.returncode == 0 else (
+                f"`docker image inspect {cfg.sandbox_image}` failed: "
+                f"{(proc.stderr or proc.stdout).strip()[-300:]}")
+        except FileNotFoundError:
+            problem = "Docker is not installed (no `docker` command on PATH)"
+        except subprocess.TimeoutExpired:
+            problem = "Docker did not answer within 30 s (is Docker Desktop running?)"
+        _DOCKER_PROBLEM[cfg.sandbox_image] = problem
+    return _DOCKER_PROBLEM[cfg.sandbox_image]
+
+
+def sandbox_preflight(cfg: Config = CONFIG) -> str:
+    """Check before any case runs. Returns "docker" or "UNISOLATED"; raises if neither is allowed."""
+    problem = _docker_problem(cfg)
+    if not problem:
+        return "docker"
+    if cfg.allow_unisolated:
+        return "UNISOLATED"
+    raise SandboxUnavailable(
+        f"{problem}\n\n"
+        "Stage 4 runs untrusted code and will not run it outside the sandbox.\n"
+        "  - Install Docker Desktop and start it.\n"
+        f"  - Build the image once, from engine2/:  docker build -t {cfg.sandbox_image} sandbox\n"
+        "  - Or, ONLY on dataset cases you have read: --allow-unisolated\n"
+        "    (or AIEVAL_ALLOW_UNISOLATED=1). The tests then run as you, unisolated.")
+
+
+def _parse_report(report: Path) -> dict[str, bool]:
+    """Per-test pass/fail from a junit XML report; empty if pytest never wrote one."""
+    per_test: dict[str, bool] = {}
+    if report.is_file():
+        for testcase in ET.parse(report).getroot().iter("testcase"):
+            failed = any(child.tag in ("failure", "error") for child in testcase)
+            skipped = any(child.tag == "skipped" for child in testcase)
+            per_test[testcase.get("name", "?")] = not failed and not skipped
+    return per_test
 
 
 def _run_pytest(workdir: Path, test_file: str, cfg: Config) -> TestRun:
     """Run one test file in `workdir` and record per-test pass/fail from junit XML."""
+    global _warned_unisolated
     target = workdir / test_file
     if not target.is_file():
         return TestRun(ran=False, output=f"{test_file} not present")
 
+    problem = _docker_problem(cfg)
+    if not problem:
+        return _run_in_container(workdir, test_file, cfg)
+    if not cfg.allow_unisolated:
+        sandbox_preflight(cfg)                      # raises SandboxUnavailable
+    if not _warned_unisolated:
+        print(BANNER.format(problem=problem), file=sys.stderr)
+        _warned_unisolated = True
+    return _run_unisolated(workdir, test_file, cfg)
+
+
+def _docker_command(name: str, workdir: Path, outdir: Path, test_file: str,
+                    cfg: Config) -> list[str]:
+    """The `docker run` line. Every flag here is one of stage 4's isolation rules."""
+    return [
+        "docker", "run", "--rm", "--name", name,
+        "--network", "none",                                 # no network at all
+        "--memory", cfg.sandbox_memory,
+        "--memory-swap", cfg.sandbox_memory,                 # no swap on top
+        "--cpus", cfg.sandbox_cpus,
+        "--pids-limit", str(cfg.sandbox_pids),               # no fork bombs
+        "--read-only",                                       # image files too
+        "--tmpfs", f"/tmp:rw,size={cfg.sandbox_tmpfs_mb}m",  # the only scratch
+        "--user", "1000:1000",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        # only what is passed here exists inside: no inherited variables at all
+        "-e", "TARGET_MODULE=app",                           # the dataset's conftest contract
+        "-e", "PYTHONDONTWRITEBYTECODE=1",
+        "-e", "HOME=/tmp",
+        "-v", f"{workdir}:/case:ro",                         # the *.py copy, read-only
+        "-v", f"{outdir}:/out",                              # report.xml comes back here
+        "-w", "/case",
+        cfg.sandbox_image,
+        "python", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+        "--junitxml=/out/report.xml", test_file,
+    ]
+
+
+def _run_in_container(workdir: Path, test_file: str, cfg: Config) -> TestRun:
+    name = f"aieval-{uuid.uuid4().hex[:12]}"
+    with tempfile.TemporaryDirectory() as out:
+        outdir = Path(out)
+        os.chmod(outdir, 0o777)        # the container's user 1000 writes here
+        try:
+            proc = subprocess.run(
+                _docker_command(name, workdir, outdir, test_file, cfg),
+                env=_subprocess_env(), capture_output=True, text=True,
+                timeout=cfg.sandbox_timeout,
+            )
+        except subprocess.TimeoutExpired as expired:
+            # Killing the `docker` client does not stop the container; this does,
+            # and with it every process inside. --rm then removes it.
+            subprocess.run(["docker", "kill", name], capture_output=True, timeout=30)
+            output = expired.stdout or ""
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            return TestRun(ran=True, passed=False, timed_out=True, returncode=-9,
+                           output=output[-4000:], isolated=True)
+        per_test = _parse_report(outdir / "report.xml")
+
+    return TestRun(
+        ran=True,
+        passed=proc.returncode == 0,
+        returncode=proc.returncode,
+        per_test=per_test,
+        output=(proc.stdout + proc.stderr)[-4000:],
+        isolated=True,
+    )
+
+
+def _run_unisolated(workdir: Path, test_file: str, cfg: Config) -> TestRun:
+    """Opt-in fallback: pytest as a plain subprocess, as YOU. See the banner."""
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "report.xml"
         env = _subprocess_env(
@@ -129,12 +301,7 @@ def _run_pytest(workdir: Path, test_file: str, cfg: Config) -> TestRun:
                            output=(expired.stdout or b"").decode(errors="replace")[-4000:]
                            if isinstance(expired.stdout, bytes) else (expired.stdout or "")[-4000:])
 
-        per_test: dict[str, bool] = {}
-        if report.is_file():
-            for testcase in ET.parse(report).getroot().iter("testcase"):
-                failed = any(child.tag in ("failure", "error") for child in testcase)
-                skipped = any(child.tag == "skipped" for child in testcase)
-                per_test[testcase.get("name", "?")] = not failed and not skipped
+        per_test = _parse_report(report)
 
     return TestRun(
         ran=True,
@@ -142,6 +309,7 @@ def _run_pytest(workdir: Path, test_file: str, cfg: Config) -> TestRun:
         returncode=proc.returncode,
         per_test=per_test,
         output=(proc.stdout + proc.stderr)[-4000:],
+        isolated=False,
     )
 
 
@@ -207,15 +375,20 @@ def verify(case: Case, fix: Fix, cfg: Config = CONFIG) -> SafetyResult:
         result.feedback_for_repair = _feedback(result, syntax_error)
         return result
 
-    print(BANNER, file=sys.stderr)
-
     with tempfile.TemporaryDirectory(prefix=f"aieval_{case.case_id}_") as tmp:
         workdir = Path(tmp) / case.path.name
-        shutil.copytree(case.path, workdir, ignore=IGNORE)
+        shutil.copytree(case.path, workdir, ignore=_allowlist)
 
         # 1. baseline on the ORIGINAL code: "passed before" is defined here.
-        (workdir / "app.py").write_text(case.code, encoding="utf-8")
-        result.functional_baseline = _run_pytest(workdir, "test_functional.py", cfg)
+        #    Run once per case; a run that did not complete is not kept, so the
+        #    next attempt tries again.
+        baseline = _cached_baseline(case)
+        if baseline is None:
+            (workdir / "app.py").write_text(case.code, encoding="utf-8")
+            baseline = _run_pytest(workdir, "test_functional.py", cfg)
+            if baseline.ran and not baseline.timed_out:
+                _BASELINES[case.case_id] = (case.code, baseline)
+        result.functional_baseline = baseline
 
         # 2. swap in the fix and re-run the same tests.
         (workdir / "app.py").write_text(fix.fixed_code, encoding="utf-8")
