@@ -5,6 +5,9 @@ they are the slowest group. They never call a model: that is the whole point of
 the stage.
 """
 
+import dataclasses
+import subprocess
+
 import pytest
 
 from config import CONFIG, Config
@@ -127,7 +130,7 @@ def test_the_original_case_folder_is_never_modified(tmp_path):
 def test_an_infinite_loop_is_killed_by_the_timeout(tmp_path):
     case = make_case(tmp_path, code=VULNERABLE_APP)
     spin = FIXED_APP + "\n\nwhile True:\n    pass\n"
-    result = verify(case, fix_for(case, spin), Config(test_timeout=5))
+    result = verify(case, fix_for(case, spin), Config(test_timeout=5, sandbox_timeout=5))
     assert result.functional_after.timed_out is True
     assert result.ok is False
 
@@ -213,3 +216,149 @@ def test_the_stripper_keeps_ordinary_variables():
     assert env["TARGET_MODULE"] == "app"
     assert "PATH" in env
     assert not [k for k in env if "SECRET" in k.upper() or "TOKEN" in k.upper()]
+
+
+# --- the Docker sandbox ------------------------------------------------------
+# These need no Docker: they check the docker command, the copy, and what
+# happens when Docker is missing. The last one runs a real container and is
+# skipped when Docker or the image is not available.
+
+def _no_docker(monkeypatch):
+    from stages import safety
+    monkeypatch.setattr(safety, "_docker_problem", lambda cfg: "Docker is not installed")
+    monkeypatch.setattr(safety, "_warned_unisolated", False)
+
+
+def test_the_docker_command_carries_every_isolation_rule(tmp_path):
+    from stages.safety import _docker_command
+    cmd = _docker_command("aieval-x", tmp_path / "case", tmp_path / "out",
+                          "test_functional.py", CONFIG)
+    line = " ".join(cmd)
+    assert "--network none" in line
+    assert "--memory 512m" in line and "--memory-swap 512m" in line
+    assert "--cpus 1" in line and "--pids-limit 64" in line
+    assert "--read-only" in line and "/tmp:rw,size=64m" in line
+    assert "--user 1000:1000" in line and "--cap-drop ALL" in line
+    assert f"{tmp_path / 'case'}:/case:ro" in line
+    assert f"{tmp_path / 'out'}:/out" in line
+    passed_env = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-e"]
+    assert sorted(v.split("=")[0] for v in passed_env) == \
+        ["HOME", "PYTHONDONTWRITEBYTECODE", "TARGET_MODULE"]
+
+
+def test_only_python_files_reach_the_test_run(tmp_path, monkeypatch):
+    from stages import safety
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    (case.path / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-x", encoding="utf-8")
+    (case.path / "secrets.json").write_text("{}", encoding="utf-8")
+    (case.path / ".git").mkdir()
+    (case.path / "pkg").mkdir()
+    (case.path / "pkg" / "helper.py").write_text("X = 1\n", encoding="utf-8")
+    (case.path / "pkg" / "data.csv").write_text("a,b\n", encoding="utf-8")
+    seen = []
+
+    def inspect(workdir, test_file, cfg):
+        seen.append(sorted(p.relative_to(workdir).as_posix()
+                           for p in workdir.rglob("*") if p.is_file()))
+        return TestRun(ran=True, passed=True)
+
+    monkeypatch.setattr(safety, "_run_pytest", inspect)
+    verify(case, fix_for(case, FIXED_APP), CONFIG)
+    assert seen[0] == ["app.py", "conftest.py", "pkg/helper.py",
+                       "test_functional.py", "test_security.py"]
+
+
+def test_a_symlink_is_never_followed_into_the_copy(tmp_path):
+    from stages.safety import _allowlist
+    secret = tmp_path / "id_rsa"
+    secret.write_text("PRIVATE KEY", encoding="utf-8")
+    folder = tmp_path / "case"
+    folder.mkdir()
+    try:
+        (folder / "app_data.py").symlink_to(secret)
+    except OSError:
+        pytest.skip("this machine does not allow creating symlinks")
+    assert _allowlist(str(folder), ["app_data.py"]) == {"app_data.py"}
+
+
+def test_without_docker_and_without_opt_in_stage_4_refuses(tmp_path, monkeypatch):
+    from stages.safety import SandboxUnavailable, sandbox_preflight
+    _no_docker(monkeypatch)
+    cfg = dataclasses.replace(CONFIG, allow_unisolated=False)
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    with pytest.raises(SandboxUnavailable, match="--allow-unisolated"):
+        sandbox_preflight(cfg)
+    with pytest.raises(SandboxUnavailable):
+        verify(case, fix_for(case, FIXED_APP), cfg)
+
+
+def test_opting_in_runs_unisolated_and_records_it(tmp_path, monkeypatch, capsys):
+    from stages.safety import sandbox_preflight
+    _no_docker(monkeypatch)
+    cfg = dataclasses.replace(CONFIG, allow_unisolated=True)
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    assert sandbox_preflight(cfg) == "UNISOLATED"
+    first = verify(case, fix_for(case, FIXED_APP), cfg)
+    verify(case, fix_for(case, FIXED_APP, attempt=2), cfg)
+    assert first.functional_after.passed
+    assert first.functional_after.isolated is False
+    assert capsys.readouterr().err.count("UNISOLATED") == 1   # warned once, not per run
+
+
+def test_with_docker_ready_the_tests_go_to_the_container(tmp_path, monkeypatch):
+    from stages import safety
+    monkeypatch.setattr(safety, "_docker_problem", lambda cfg: "")
+    monkeypatch.setattr(safety, "_BASELINES", {})     # else an earlier test's baseline is reused
+    calls = []
+
+    def fake_container(workdir, test_file, cfg):
+        calls.append(test_file)
+        return TestRun(ran=True, passed=True, isolated=True)
+
+    monkeypatch.setattr(safety, "_run_in_container", fake_container)
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    result = verify(case, fix_for(case, FIXED_APP), CONFIG)
+    assert calls == ["test_functional.py", "test_functional.py", "test_security.py"]
+    assert result.functional_after.isolated is True
+
+
+def test_a_container_timeout_kills_the_container(tmp_path, monkeypatch):
+    from stages import safety
+    commands = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        if cmd[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(safety.subprocess, "run", fake_run)
+    result = safety._run_in_container(tmp_path, "test_functional.py", CONFIG)
+    name = commands[0][commands[0].index("--name") + 1]
+    assert commands[1] == ["docker", "kill", name]
+    assert result.timed_out and result.isolated and not result.passed
+
+
+def _sandbox_ready() -> bool:
+    from stages.safety import _docker_problem
+    return _docker_problem(CONFIG) == ""
+
+
+@pytest.mark.skipif(not _sandbox_ready(),
+                    reason="needs Docker and `docker build -t aieval-sandbox sandbox`")
+def test_inside_the_container_there_is_no_network_and_no_writable_case(tmp_path):
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    (case.path / "test_functional.py").write_text(
+        "import socket\nfrom pathlib import Path\nimport pytest\n\n\n"
+        "def test_no_network(mod):\n"
+        "    with pytest.raises(OSError):\n"
+        "        socket.create_connection(('1.1.1.1', 53), timeout=3)\n\n\n"
+        "def test_case_folder_is_read_only(mod):\n"
+        "    with pytest.raises(OSError):\n"
+        "        Path('/case/pwned').write_text('x')\n\n\n"
+        "def test_scratch_is_writable(mod, tmp_path):\n"
+        "    (tmp_path / 'ok').write_text('x')\n",
+        encoding="utf-8")
+    result = verify(case, fix_for(case, FIXED_APP), CONFIG)
+    assert result.functional_after.isolated is True
+    assert result.functional_after.passed, result.functional_after.output
