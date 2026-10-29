@@ -40,6 +40,13 @@ export function parseFindings(report: string, file: string): SecurityFinding[] {
 	});
 }
 
+// Section C rates how likely the suggested rewrite changes behavior; shown beside the apply button.
+export function parseCompatibilityRisk(report: string): string | undefined {
+	const text = report.replace(/^\s*#{1,6}\s*/gm, '').replace(/\*\*/g, '');
+	const risk = /^C\. COMPATIBILITY RISK\b\s*[:\-–—]?\s*(Low|Medium|High)\b/im.exec(text)?.[1];
+	return risk && risk[0].toUpperCase() + risk.slice(1).toLowerCase();
+}
+
 export function webviewHtml(): string {
 	const nonce = randomBytes(16).toString('hex');
 	return `<!DOCTYPE html>
@@ -54,6 +61,8 @@ button:hover { background: var(--vscode-button-hoverBackground); } button:disabl
 .card { border: 1px solid var(--vscode-panel-border, var(--vscode-input-border)); border-radius: 5px; padding: 18px; margin-top: 14px; }
 .card header { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; } h3 { font-size: 14px; margin: 0; } .badge { font-size: 11px; border: 1px solid currentColor; border-radius: 4px; padding: 3px 6px; }
 .CRITICAL, .HIGH, .error { color: var(--vscode-errorForeground); } .MEDIUM { color: var(--vscode-editorWarning-foreground); } .LOW { color: var(--vscode-editorInfo-foreground); } .detail { white-space: pre-wrap; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; } .actions button { margin-top: 8px; }
+.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); } .secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
 @media (max-width: 400px) { body { padding: 12px; } }
 </style></head><body><main><h1>AI Evaluator</h1><p class="muted">Analyze Python code for security vulnerabilities.</p>
 <span class="label">Current File</span><div id="file">No file selected</div><button id="analyze">Analyze File</button>
@@ -76,6 +85,18 @@ window.addEventListener('message', ({ data }) => {
  if (data.note) results.append(element('p', data.note, 'muted'));
  if (!data.findings.length) { results.append(element('h3', '✓ No vulnerabilities detected'), element('p', 'The analyzer did not identify any supported security vulnerabilities in this file.')); return; }
  results.append(element('p', data.findings.length + (data.findings.length === 1 ? ' vulnerability found' : ' vulnerabilities found')));
+ if (data.canApply) {
+  const fix = element('section', '', 'card');
+  fix.append(element('h3', 'Suggested Changes'), element('p', 'Replace ' + data.analyzedFile + ' with the fixed code from this analysis. The file is not changed until you apply.', 'muted'));
+  if (data.risk) fix.append(element('p', 'Compatibility risk: ' + data.risk, data.risk.toUpperCase()));
+  const actions = element('div', '', 'actions');
+  const review = element('button', 'Review Changes', 'secondary');
+  review.addEventListener('click', () => vscode.postMessage({ command: 'review' }));
+  const apply = element('button', 'Apply Suggested Changes');
+  apply.addEventListener('click', () => { apply.disabled = true; vscode.postMessage({ command: 'apply' }); });
+  actions.append(review, apply); fix.append(actions); results.append(fix);
+ }
+ if (data.fixMessage) results.append(element('p', data.fixMessage));
  for (const finding of data.findings) {
   const card = element('article', '', 'card'); const header = element('header', '');
   const severity = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(finding.severity) ? finding.severity : '';

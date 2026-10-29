@@ -2,13 +2,16 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
-import { parseFindings, SecurityFinding, webviewHtml } from './webview';
+import { parseCompatibilityRisk, parseFindings, SecurityFinding, webviewHtml } from './webview';
 
 let outputChannel: vscode.OutputChannel;
 let diagnostics: vscode.DiagnosticCollection;
 let panel: vscode.WebviewPanel | undefined;
 let currentDocument: vscode.TextDocument | undefined;
-let state: { file?: string; analyzedFile?: string; analyzedPath?: string; busy: boolean; findings?: SecurityFinding[]; error?: string; errorTitle?: string; note?: string } = { busy: false };
+let state: { file?: string; analyzedFile?: string; analyzedPath?: string; busy: boolean; findings?: SecurityFinding[]; error?: string; errorTitle?: string; note?: string; canApply?: boolean; risk?: string; fixMessage?: string } = { busy: false };
+// The engine's fixed file for the last analysis and the source it was made from. Kept out of the Webview state.
+let pendingFix: { path: string; original: string; fixedPath: string } | undefined;
+let applying = false;
 
 function publish() {
 	void panel?.webview.postMessage(state);
@@ -23,6 +26,8 @@ function openEvaluator(context: vscode.ExtensionContext) {
 		if (message?.command === 'ready') { publish(); }
 		if (message?.command === 'logs') { outputChannel.show(true); }
 		if (message?.command === 'analyze') { void analyzeForVulnerabilities(context); }
+		if (message?.command === 'review') { void reviewSuggestedChanges(); }
+		if (message?.command === 'apply') { void applySuggestedChanges(); }
 	}, undefined, context.subscriptions);
 	panel.onDidDispose(() => { panel = undefined; }, undefined, context.subscriptions);
 	context.subscriptions.push(panel);
@@ -82,10 +87,12 @@ async function openDevTestFile(context: vscode.ExtensionContext): Promise<void> 
 }
 
 async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
-	if (state.busy) { publish(); return; }
+	if (state.busy || applying) { publish(); return; }
+	pendingFix = undefined;
 	const document = vscode.window.activeTextEditor?.document || currentDocument;
 	openEvaluator(context);
 	const fail = (message: string, title = 'Unable to analyze file') => {
+		pendingFix = undefined;
 		state = { busy: false, file: document && path.basename(document.uri.fsPath), analyzedFile: document && path.basename(document.uri.fsPath), analyzedPath: document?.uri.fsPath, error: message, errorTitle: title };
 		publish();
 	};
@@ -141,6 +148,8 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 			},
 			() =>
 				new Promise<void>((resolve) => {
+					// The engine reads the file on disk; keep that version so a fix is never applied over later edits.
+					const original = fs.readFileSync(filePath, 'utf8');
 					const proc = spawn(pythonPath, ['fixer.py', filePath], { cwd: engineDir });
 
 					let stderr = '';
@@ -167,8 +176,20 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 								if (!reportPath || !samePath(path.dirname(path.resolve(reportPath)), path.join(engineDir, 'output')) || stderr.includes('[warning]')) {
 									throw new Error('The Python analysis engine returned an invalid or incomplete report. See the output panel for details.');
 								}
-								state.findings = parseFindings(fs.readFileSync(reportPath, 'utf8'), path.basename(filePath));
+								const report = fs.readFileSync(reportPath, 'utf8');
+								state.findings = parseFindings(report, path.basename(filePath));
 								showDiagnostics(document, state.findings);
+								// Offer the engine's fixed file for the analyzed file only; the user decides whether to apply it.
+								const fixedPath = /^\[saved\] Fixed code: (.+)$/m.exec(stderr)?.[1].trim();
+								if (fixedPath && state.findings.length) {
+									if (samePath(path.dirname(path.resolve(fixedPath)), path.join(engineDir, 'output')) && !stderr.includes('[notice] Line tags leaked')) {
+										pendingFix = { path: filePath, original, fixedPath };
+										state.canApply = true;
+										state.risk = parseCompatibilityRisk(report);
+									} else {
+										state.note = [state.note, 'The suggested fix could not be verified, so it cannot be applied automatically.'].filter(Boolean).join(' ');
+									}
+								}
 								const mode = /^\[mode\] (.+)$/m.exec(stderr)?.[1];
 								if (mode) { state.note = [state.note, mode].filter(Boolean).join(' '); }
 							} catch (error) {
@@ -196,6 +217,62 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 		state.busy = false;
 		publish();
 	}
+}
+
+async function reviewSuggestedChanges() {
+	if (!pendingFix) { publish(); return; }
+	await vscode.commands.executeCommand('vscode.diff', vscode.Uri.file(pendingFix.path), vscode.Uri.file(pendingFix.fixedPath),
+		`${path.basename(pendingFix.path)} ↔ Suggested Changes`, { viewColumn: vscode.ViewColumn.One });
+}
+
+// Replace the analyzed file with the engine's fixed code. Runs only when the user clicks Apply.
+async function applySuggestedChanges() {
+	const fix = pendingFix;
+	if (!fix || state.busy || applying) { publish(); return; }
+	// Claim the fix so a repeated click cannot apply it twice.
+	pendingFix = undefined;
+	applying = true;
+	const name = path.basename(fix.path);
+	const failApply = (message: string) => {
+		state = { ...state, fixMessage: message };
+		vscode.window.showErrorMessage(`AI Evaluator: ${message}`);
+	};
+	try {
+		const document = await vscode.workspace.openTextDocument(vscode.Uri.file(fix.path));
+		if (normalizeEol(document.getText()) !== normalizeEol(fix.original)) {
+			state.canApply = false;
+			failApply(`${name} changed after it was analyzed. Analyze it again before applying suggested changes.`);
+			return;
+		}
+		// Read through VS Code so edits made in the Review Changes diff are included.
+		const fixed = normalizeEol((await vscode.workspace.openTextDocument(vscode.Uri.file(fix.fixedPath))).getText());
+		const edit = new vscode.WorkspaceEdit();
+		edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+			document.eol === vscode.EndOfLine.CRLF ? fixed.replace(/\n/g, '\r\n') : fixed);
+		if (!await vscode.workspace.applyEdit(edit)) {
+			pendingFix = fix;
+			failApply(`Could not apply suggested changes to ${name}.`);
+			return;
+		}
+		// The findings describe the replaced code.
+		diagnostics.delete(document.uri);
+		const saved = await document.save();
+		state = { ...state, canApply: false, fixMessage: saved
+			? `Applied suggested changes to ${name}. Analyze the file again to verify the fix, or use Undo in the editor to revert.`
+			: `Applied suggested changes to ${name}, but the file could not be saved. Save it to keep the changes.` };
+		vscode.window.showInformationMessage(`AI Evaluator: Applied suggested changes to ${name}.`);
+	} catch (error) {
+		pendingFix = fix;
+		failApply(error instanceof Error ? error.message : String(error));
+	} finally {
+		applying = false;
+		publish();
+	}
+}
+
+// VS Code reports one line ending per document and drops a UTF-8 BOM; compare and write text without either.
+function normalizeEol(text: string): string {
+	return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
 }
 
 function showDiagnostics(document: vscode.TextDocument, findings: SecurityFinding[]) {
