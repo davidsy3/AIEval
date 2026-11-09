@@ -2,15 +2,17 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
-import { parseCompatibilityRisk, parseFindings, SecurityFinding, webviewHtml } from './webview';
+import { ChangeView, Decision, parseCompatibilityRisk, parseFindings, SecurityFinding, webviewHtml } from './webview';
+import { computeHunks, Hunk, hunkKey } from './diff';
 
 let outputChannel: vscode.OutputChannel;
 let diagnostics: vscode.DiagnosticCollection;
 let panel: vscode.WebviewPanel | undefined;
 let currentDocument: vscode.TextDocument | undefined;
-let state: { file?: string; analyzedFile?: string; analyzedPath?: string; busy: boolean; findings?: SecurityFinding[]; error?: string; errorTitle?: string; note?: string; canApply?: boolean; risk?: string; fixMessage?: string } = { busy: false };
-// The engine's fixed file for the last analysis and the source it was made from. Kept out of the Webview state.
-let pendingFix: { path: string; original: string; fixedPath: string } | undefined;
+let state: { file?: string; analyzedFile?: string; analyzedPath?: string; busy: boolean; findings?: SecurityFinding[]; error?: string; errorTitle?: string; note?: string; canApply?: boolean; risk?: string; fixMessage?: string; changes?: ChangeView[] } = { busy: false };
+// The engine's fixed file for the last analysis, the source it was made from, its individual changes
+// and the user's decision on each. Kept out of the Webview state.
+let pendingFix: { path: string; original: string; fixedPath: string; hunks: Hunk[]; decisions: Map<string, Decision> } | undefined;
 let applying = false;
 
 function publish() {
@@ -26,7 +28,8 @@ function openEvaluator(context: vscode.ExtensionContext) {
 		if (message?.command === 'ready') { publish(); }
 		if (message?.command === 'logs') { outputChannel.show(true); }
 		if (message?.command === 'analyze') { void analyzeForVulnerabilities(context); }
-		if (message?.command === 'review') { void reviewSuggestedChanges(); }
+		if (message?.command === 'review') { void reviewSuggestedChanges(typeof message.id === 'string' ? message.id : undefined); }
+		if (message?.command === 'decide') { decideChange(message.id, message.decision); }
 		if (message?.command === 'apply') { void applySuggestedChanges(); }
 	}, undefined, context.subscriptions);
 	panel.onDidDispose(() => { panel = undefined; }, undefined, context.subscriptions);
@@ -38,7 +41,14 @@ export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel('AI Evaluator');
 	context.subscriptions.push(outputChannel);
 	diagnostics = vscode.languages.createDiagnosticCollection('aiEvaluator');
-	context.subscriptions.push(diagnostics, vscode.workspace.onDidChangeTextDocument(updateDiagnosticsForEdit));
+	context.subscriptions.push(diagnostics, vscode.workspace.onDidChangeTextDocument(updateDiagnosticsForEdit),
+		// Edits made to the suggested code in the Review Changes diff change the list of changes to decide on.
+		vscode.workspace.onDidChangeTextDocument(event => {
+			if (pendingFix && !applying && samePath(event.document.uri.fsPath, pendingFix.fixedPath)) {
+				refreshChanges(event.document.getText());
+				publish();
+			}
+		}));
 
 	const disposable = vscode.commands.registerCommand(
 		'aiEvaluator.analyzeForVulnerabilities',
@@ -183,9 +193,14 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 								const fixedPath = /^\[saved\] Fixed code: (.+)$/m.exec(stderr)?.[1].trim();
 								if (fixedPath && state.findings.length) {
 									if (samePath(path.dirname(path.resolve(fixedPath)), path.join(engineDir, 'output')) && !stderr.includes('[notice] Line tags leaked')) {
-										pendingFix = { path: filePath, original, fixedPath };
-										state.canApply = true;
-										state.risk = parseCompatibilityRisk(report);
+										pendingFix = { path: filePath, original, fixedPath, hunks: [], decisions: new Map() };
+										refreshChanges(fs.readFileSync(fixedPath, 'utf8'));
+										if (pendingFix.hunks.length) {
+											state.risk = parseCompatibilityRisk(report);
+										} else {
+											pendingFix = undefined;
+											state.note = [state.note, 'The suggested fix does not change the file.'].filter(Boolean).join(' ');
+										}
 									} else {
 										state.note = [state.note, 'The suggested fix could not be verified, so it cannot be applied automatically.'].filter(Boolean).join(' ');
 									}
@@ -219,20 +234,68 @@ async function analyzeForVulnerabilities(context: vscode.ExtensionContext) {
 	}
 }
 
-async function reviewSuggestedChanges() {
-	if (!pendingFix) { publish(); return; }
-	await vscode.commands.executeCommand('vscode.diff', vscode.Uri.file(pendingFix.path), vscode.Uri.file(pendingFix.fixedPath),
-		`${path.basename(pendingFix.path)} ↔ Suggested Changes`, { viewColumn: vscode.ViewColumn.One });
+// Split the suggested code into individual changes, keeping decisions for changes that are still present.
+function refreshChanges(fixedText: string) {
+	if (!pendingFix) { return; }
+	pendingFix.hunks = computeHunks(normalizeEol(pendingFix.original), normalizeEol(fixedText));
+	const keys = new Set(pendingFix.hunks.map(hunkKey));
+	for (const key of [...pendingFix.decisions.keys()]) {
+		if (!keys.has(key)) { pendingFix.decisions.delete(key); }
+	}
+	syncChanges();
 }
 
-// Replace the analyzed file with the engine's fixed code. Runs only when the user clicks Apply.
+function syncChanges() {
+	const fix = pendingFix;
+	state.canApply = !!fix?.hunks.length;
+	state.changes = fix?.hunks.map(hunk => {
+		// 1-based original lines the change replaces; an insertion sits before line `first`.
+		const first = hunk.start + 1, last = Math.max(hunk.end, first);
+		return {
+			id: hunkKey(hunk), line: first, endLine: hunk.end > hunk.start ? hunk.end : undefined,
+			removed: hunk.removed, added: hunk.added, decision: fix.decisions.get(hunkKey(hunk)),
+			related: (state.findings ?? []).filter(f => f.line && f.line <= last && (f.endLine ?? f.line) >= first).map(f => f.type),
+		};
+	});
+}
+
+function decideChange(id: unknown, decision: unknown) {
+	if (pendingFix && !applying && typeof id === 'string' && pendingFix.hunks.some(hunk => hunkKey(hunk) === id)) {
+		if (decision === 'accepted' || decision === 'declined') { pendingFix.decisions.set(id, decision); }
+		else { pendingFix.decisions.delete(id); }
+		state.fixMessage = undefined;
+		syncChanges();
+	}
+	publish();
+}
+
+// Open the full diff, optionally scrolled to one change.
+async function reviewSuggestedChanges(id?: string) {
+	if (!pendingFix) { publish(); return; }
+	const hunk = id ? pendingFix.hunks.find(item => hunkKey(item) === id) : undefined;
+	const options: vscode.TextDocumentShowOptions = { viewColumn: vscode.ViewColumn.One };
+	if (hunk) { options.selection = new vscode.Range(hunk.fixedStart, 0, hunk.fixedStart + Math.max(hunk.added.length - 1, 0), 0); }
+	await vscode.commands.executeCommand('vscode.diff', vscode.Uri.file(pendingFix.path), vscode.Uri.file(pendingFix.fixedPath),
+		`${path.basename(pendingFix.path)} ↔ Suggested Changes`, options);
+}
+
+// Apply only the changes the user accepted. Runs only when the user clicks Apply after deciding on every change.
 async function applySuggestedChanges() {
 	const fix = pendingFix;
 	if (!fix || state.busy || applying) { publish(); return; }
+	const name = path.basename(fix.path);
+	if (fix.hunks.some(hunk => !fix.decisions.has(hunkKey(hunk)))) {
+		state.fixMessage = 'Accept or decline every suggested change before applying.';
+		publish(); return;
+	}
+	const accepted = fix.hunks.filter(hunk => fix.decisions.get(hunkKey(hunk)) === 'accepted');
 	// Claim the fix so a repeated click cannot apply it twice.
 	pendingFix = undefined;
+	if (!accepted.length) {
+		state = { ...state, canApply: false, changes: undefined, fixMessage: `All suggested changes were declined. ${name} was not changed.` };
+		publish(); return;
+	}
 	applying = true;
-	const name = path.basename(fix.path);
 	const failApply = (message: string) => {
 		state = { ...state, fixMessage: message };
 		vscode.window.showErrorMessage(`AI Evaluator: ${message}`);
@@ -241,26 +304,24 @@ async function applySuggestedChanges() {
 		const document = await vscode.workspace.openTextDocument(vscode.Uri.file(fix.path));
 		if (normalizeEol(document.getText()) !== normalizeEol(fix.original)) {
 			state.canApply = false;
+			state.changes = undefined;
 			failApply(`${name} changed after it was analyzed. Analyze it again before applying suggested changes.`);
 			return;
 		}
-		// Read through VS Code so edits made in the Review Changes diff are included.
-		const fixed = normalizeEol((await vscode.workspace.openTextDocument(vscode.Uri.file(fix.fixedPath))).getText());
+		// One edit per accepted change, so findings on untouched lines keep their diagnostics.
 		const edit = new vscode.WorkspaceEdit();
-		edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
-			document.eol === vscode.EndOfLine.CRLF ? fixed.replace(/\n/g, '\r\n') : fixed);
+		for (const hunk of accepted) { edit.replace(document.uri, ...hunkEdit(document, hunk)); }
 		if (!await vscode.workspace.applyEdit(edit)) {
 			pendingFix = fix;
 			failApply(`Could not apply suggested changes to ${name}.`);
 			return;
 		}
-		// The findings describe the replaced code.
-		diagnostics.delete(document.uri);
 		const saved = await document.save();
-		state = { ...state, canApply: false, fixMessage: saved
-			? `Applied suggested changes to ${name}. Analyze the file again to verify the fix, or use Undo in the editor to revert.`
-			: `Applied suggested changes to ${name}, but the file could not be saved. Save it to keep the changes.` };
-		vscode.window.showInformationMessage(`AI Evaluator: Applied suggested changes to ${name}.`);
+		const count = `${accepted.length} of ${fix.hunks.length} suggested change${fix.hunks.length === 1 ? '' : 's'}`;
+		state = { ...state, canApply: false, changes: undefined, fixMessage: saved
+			? `Applied ${count} to ${name}. Analyze the file again to verify the fix, or use Undo in the editor to revert.`
+			: `Applied ${count} to ${name}, but the file could not be saved. Save it to keep the changes.` };
+		vscode.window.showInformationMessage(`AI Evaluator: Applied ${count} to ${name}.`);
 	} catch (error) {
 		pendingFix = fix;
 		failApply(error instanceof Error ? error.message : String(error));
@@ -268,6 +329,20 @@ async function applySuggestedChanges() {
 		applying = false;
 		publish();
 	}
+}
+
+// The document range and replacement text for one change. The document matches the analyzed source line for line.
+function hunkEdit(document: vscode.TextDocument, hunk: Hunk): [vscode.Range, string] {
+	const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
+	const docEnd = document.lineAt(document.lineCount - 1).range.end;
+	if (hunk.end < document.lineCount) {
+		return [new vscode.Range(hunk.start, 0, hunk.end, 0), hunk.added.map(line => line + eol).join('')];
+	}
+	if (hunk.start === hunk.end) { return [new vscode.Range(docEnd, docEnd), eol + hunk.added.join(eol)]; }
+	if (hunk.added.length) { return [new vscode.Range(new vscode.Position(hunk.start, 0), docEnd), hunk.added.join(eol)]; }
+	// Removing the last lines also removes the line break before them.
+	const from = hunk.start > 0 ? document.lineAt(hunk.start - 1).range.end : new vscode.Position(0, 0);
+	return [new vscode.Range(from, docEnd), ''];
 }
 
 // VS Code reports one line ending per document and drops a UTF-8 BOM; compare and write text without either.
