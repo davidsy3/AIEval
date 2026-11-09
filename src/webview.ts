@@ -10,6 +10,19 @@ export interface SecurityFinding {
 	recommendation?: string;
 }
 
+export type Decision = 'accepted' | 'declined';
+
+// One suggested change as shown in the Webview; the user accepts or declines each one.
+export interface ChangeView {
+	id: string;
+	line: number;
+	endLine?: number;
+	removed: string[];
+	added: string[];
+	decision?: Decision;
+	related: string[];
+}
+
 // Adapt the engine's existing A–E text report; compatibility risk is not severity.
 export function parseFindings(report: string, file: string): SecurityFinding[] {
 	const text = report.replace(/^\s*#{1,6}\s*/gm, '').replace(/\*\*/g, '');
@@ -40,6 +53,13 @@ export function parseFindings(report: string, file: string): SecurityFinding[] {
 	});
 }
 
+// Section C rates how likely the suggested rewrite changes behavior; shown beside the apply button.
+export function parseCompatibilityRisk(report: string): string | undefined {
+	const text = report.replace(/^\s*#{1,6}\s*/gm, '').replace(/\*\*/g, '');
+	const risk = /^C\. COMPATIBILITY RISK\b\s*[:\-–—]?\s*(Low|Medium|High)\b/im.exec(text)?.[1];
+	return risk && risk[0].toUpperCase() + risk.slice(1).toLowerCase();
+}
+
 export function webviewHtml(): string {
 	const nonce = randomBytes(16).toString('hex');
 	return `<!DOCTYPE html>
@@ -54,6 +74,13 @@ button:hover { background: var(--vscode-button-hoverBackground); } button:disabl
 .card { border: 1px solid var(--vscode-panel-border, var(--vscode-input-border)); border-radius: 5px; padding: 18px; margin-top: 14px; }
 .card header { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; } h3 { font-size: 14px; margin: 0; } .badge { font-size: 11px; border: 1px solid currentColor; border-radius: 4px; padding: 3px 6px; }
 .CRITICAL, .HIGH, .error { color: var(--vscode-errorForeground); } .MEDIUM { color: var(--vscode-editorWarning-foreground); } .LOW { color: var(--vscode-editorInfo-foreground); } .detail { white-space: pre-wrap; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; } .actions button { margin-top: 8px; }
+.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); } .secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.diff { margin: 12px 0 0; padding: 8px 0; max-height: 320px; overflow: auto; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); border-radius: 4px; background: var(--vscode-textCodeBlock-background); }
+.diff div { padding: 0 10px; white-space: pre; } .diff .del { background: var(--vscode-diffEditor-removedLineBackground, var(--vscode-diffEditor-removedTextBackground)); } .diff .add { background: var(--vscode-diffEditor-insertedLineBackground, var(--vscode-diffEditor-insertedTextBackground)); }
+.change.accepted { border-color: var(--vscode-testing-iconPassed, var(--vscode-focusBorder)); } .change.declined { opacity: .7; }
+.status-accepted { color: var(--vscode-testing-iconPassed, inherit); } .status-declined { color: var(--vscode-descriptionForeground); }
+button[aria-pressed="true"] { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
 @media (max-width: 400px) { body { padding: 12px; } }
 </style></head><body><main><h1>AI Evaluator</h1><p class="muted">Analyze Python code for security vulnerabilities.</p>
 <span class="label">Current File</span><div id="file">No file selected</div><button id="analyze">Analyze File</button>
@@ -63,6 +90,7 @@ button:hover { background: var(--vscode-button-hoverBackground); } button:disabl
 const vscode = acquireVsCodeApi();
 const button = document.getElementById('analyze');
 const results = document.getElementById('results');
+let focusKey;
 function element(tag, text, className) { const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; return node; }
 button.addEventListener('click', () => { button.disabled = true; vscode.postMessage({ command: 'analyze' }); });
 window.addEventListener('message', ({ data }) => {
@@ -76,6 +104,44 @@ window.addEventListener('message', ({ data }) => {
  if (data.note) results.append(element('p', data.note, 'muted'));
  if (!data.findings.length) { results.append(element('h3', '✓ No vulnerabilities detected'), element('p', 'The analyzer did not identify any supported security vulnerabilities in this file.')); return; }
  results.append(element('p', data.findings.length + (data.findings.length === 1 ? ' vulnerability found' : ' vulnerabilities found')));
+ if (data.canApply && data.changes) {
+  const changes = data.changes, decided = changes.filter(c => c.decision).length, accepted = changes.filter(c => c.decision === 'accepted').length;
+  const fix = element('section', '', 'card');
+  fix.append(element('h3', 'Suggested Changes'), element('p', 'Review each change and accept or decline it. Only accepted changes are applied to ' + data.analyzedFile + ', and nothing changes until you apply.', 'muted'));
+  if (data.risk) fix.append(element('p', 'Compatibility risk: ' + data.risk, data.risk.toUpperCase()));
+  fix.append(element('p', decided + ' of ' + changes.length + ' reviewed · ' + accepted + ' accepted'));
+  changes.forEach((change, index) => {
+   const card = element('article', '', 'card change' + (change.decision ? ' ' + change.decision : '')); const header = element('header', '');
+   const where = change.removed.length ? 'Line' + (change.endLine > change.line ? 's ' + change.line + '-' + change.endLine : ' ' + change.line) : 'Insert before line ' + change.line;
+   header.append(element('h3', 'Change ' + (index + 1) + ' of ' + changes.length + ' · ' + where),
+    element('span', change.decision === 'accepted' ? 'Accepted' : change.decision === 'declined' ? 'Declined' : 'Pending', 'badge status-' + (change.decision || 'pending')));
+   card.append(header);
+   if (change.related.length) card.append(element('p', 'Related: ' + change.related.join('; '), 'location'));
+   const diff = element('div', '', 'diff');
+   for (const line of change.removed) diff.append(element('div', '- ' + line, 'del'));
+   for (const line of change.added) diff.append(element('div', '+ ' + line, 'add'));
+   card.append(diff);
+   const actions = element('div', '', 'actions');
+   const choice = (label, decision, className) => {
+    const b = element('button', label, className); b.dataset.focus = change.id + decision; b.setAttribute('aria-pressed', String(change.decision === decision));
+    b.addEventListener('click', () => { focusKey = b.dataset.focus; vscode.postMessage({ command: 'decide', id: change.id, decision: change.decision === decision ? undefined : decision }); });
+    return b;
+   };
+   const show = element('button', 'Show in Diff', 'secondary');
+   show.addEventListener('click', () => vscode.postMessage({ command: 'review', id: change.id }));
+   actions.append(choice('Accept', 'accepted'), choice('Decline', 'declined', 'secondary'), show); card.append(actions); fix.append(card);
+  });
+  const actions = element('div', '', 'actions');
+  const review = element('button', 'Review All Changes', 'secondary');
+  review.addEventListener('click', () => vscode.postMessage({ command: 'review' }));
+  const apply = element('button', decided < changes.length ? 'Review all changes to apply' : accepted ? 'Apply ' + accepted + ' Accepted Change' + (accepted === 1 ? '' : 's') : 'Finish Review (no changes)');
+  apply.disabled = decided < changes.length;
+  apply.addEventListener('click', () => { apply.disabled = true; vscode.postMessage({ command: 'apply' }); });
+  actions.append(review, apply); fix.append(actions); results.append(fix);
+ }
+ if (data.fixMessage) results.append(element('p', data.fixMessage));
+ // Re-rendering replaces the buttons; keep keyboard focus on the one just used.
+ if (focusKey) { results.querySelector('[data-focus="' + CSS.escape(focusKey) + '"]')?.focus(); focusKey = undefined; }
  for (const finding of data.findings) {
   const card = element('article', '', 'card'); const header = element('header', '');
   const severity = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(finding.severity) ? finding.severity : '';
