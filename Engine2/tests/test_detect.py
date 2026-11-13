@@ -89,6 +89,13 @@ def test_detect_over_flags_on_purpose(tmp_path):
     assert len(detect(case, CONFIG)) > len(case.vulns)
 
 
+def test_a_nosec_comment_does_not_hide_a_finding():
+    """The file is untrusted: `# nosec` must not silence stage 1 or the re-scan."""
+    hidden = "\n".join(line + "  # nosec" if "execute" in line else line
+                       for line in VULNERABLE_APP.splitlines()) + "\n"
+    assert len(detect_code(hidden)) == len(detect_code(VULNERABLE_APP)) > 0
+
+
 def test_detect_code_matches_detect_on_the_same_source(tmp_path):
     case = make_case(tmp_path, code=VULNERABLE_APP)
     by_file = [(f.cwe, f.line_start) for f in detect(case, CONFIG)]
