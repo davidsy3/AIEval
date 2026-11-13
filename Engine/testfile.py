@@ -9,18 +9,18 @@ import requests
 from flask import Flask, request, jsonify, render_template_string, session
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24).hex()
+app.secret_key = "super-secret-key-123"
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("inventory")
 
-AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-PAYMENT_API_KEY = os.environ.get("PAYMENT_API_KEY", "")
-DB_URL = os.environ.get("DB_URL", "")
+AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
+AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+PAYMENT_API_KEY = "sk_test_FAKE4eC39HqLyjWDarjtT1zdp7dc"
+DB_URL = "postgresql://admin:P@ssw0rd!@db.internal.example:5432/inventory"
 
-ADMIN_USER = os.environ.get("ADMIN_USER", "")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
+ADMIN_USER = "admin"
+ADMIN_PASS = "admin123"
 
 # Decoy: this one is read from the environment and should NOT be flagged
 WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
