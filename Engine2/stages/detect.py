@@ -60,10 +60,14 @@ def run_bandit(path: Path | str, cfg: Config = CONFIG) -> list[dict]:
 
     Bandit exits 1 when it finds something, so the return code is not an error
     signal here; only a missing/failed run is.
+
+    `--ignore-nosec`: the file is untrusted, and a `# nosec` comment in it would
+    otherwise hide a finding -- from stage 1, and from the stage-4 re-scan of a
+    fix that simply added the comment.
     """
     path = Path(path)
     proc = subprocess.run(
-        [sys.executable, "-m", "bandit", "-f", "json", "-q", str(path)],
+        [sys.executable, "-m", "bandit", "-f", "json", "-q", "--ignore-nosec", str(path)],
         capture_output=True, text=True, timeout=cfg.bandit_timeout,
     )
     if not proc.stdout.strip():

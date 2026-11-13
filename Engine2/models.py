@@ -178,6 +178,7 @@ class SafetyResult:
     attempt: int = 1
     applied: bool = False                  # was there any code to test?
     syntax_ok: bool = True
+    disallowed: list[str] = field(default_factory=list)  # added code no fix needs; never run
     functional_baseline: TestRun = field(default_factory=TestRun)
     functional_after: TestRun = field(default_factory=TestRun)
     security_after: Optional[TestRun] = None
@@ -199,7 +200,7 @@ class SafetyResult:
 
     @property
     def ok(self) -> bool:
-        return self.syntax_ok and self.tests_pass and self.vuln_gone
+        return self.syntax_ok and not self.disallowed and self.tests_pass and self.vuln_gone
 
 
 # --- stage 5 -----------------------------------------------------------------

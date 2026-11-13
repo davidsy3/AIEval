@@ -7,6 +7,8 @@ the stage.
 
 import dataclasses
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -231,16 +233,18 @@ def _no_docker(monkeypatch):
 
 def test_the_docker_command_carries_every_isolation_rule(tmp_path):
     from stages.safety import _docker_command
-    cmd = _docker_command("aieval-x", tmp_path / "case", tmp_path / "out",
-                          "test_functional.py", CONFIG)
+    cmd = _docker_command("aieval-x", tmp_path / "case", "test_functional.py", CONFIG)
     line = " ".join(cmd)
     assert "--network none" in line
     assert "--memory 512m" in line and "--memory-swap 512m" in line
     assert "--cpus 1" in line and "--pids-limit 64" in line
     assert "--read-only" in line and "/tmp:rw,size=64m" in line
     assert "--user 1000:1000" in line and "--cap-drop ALL" in line
-    assert f"{tmp_path / 'case'}:/case:ro" in line
-    assert f"{tmp_path / 'out'}:/out" in line
+    # one mount, read-only: nothing in the container can write to the host
+    mounts = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-v"]
+    assert mounts == [f"{tmp_path / 'case'}:/case:ro"]
+    # leftover processes are killed before the report is read
+    assert "kill -9 -1" in cmd[-1]
     passed_env = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-e"]
     assert sorted(v.split("=")[0] for v in passed_env) == \
         ["HOME", "PYTHONDONTWRITEBYTECODE", "TARGET_MODULE"]
@@ -324,19 +328,162 @@ def test_with_docker_ready_the_tests_go_to_the_container(tmp_path, monkeypatch):
 
 def test_a_container_timeout_kills_the_container(tmp_path, monkeypatch):
     from stages import safety
-    commands = []
+    names, killed = [], []
 
-    def fake_run(cmd, **kwargs):
-        commands.append(cmd)
-        if cmd[:2] == ["docker", "run"]:
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+    def slow_docker(name, workdir, test_file, cfg):     # stands in for `docker run`
+        names.append(name)
+        return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    def fake_run(cmd, **kwargs):                         # records `docker kill`
+        killed.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
+    monkeypatch.setattr(safety, "_docker_command", slow_docker)
     monkeypatch.setattr(safety.subprocess, "run", fake_run)
-    result = safety._run_in_container(tmp_path, "test_functional.py", CONFIG)
-    name = commands[0][commands[0].index("--name") + 1]
-    assert commands[1] == ["docker", "kill", name]
+    cfg = dataclasses.replace(CONFIG, sandbox_timeout=1)
+    result = safety._run_in_container(tmp_path, "test_functional.py", cfg)
+    assert killed == [["docker", "kill", names[0]]]
     assert result.timed_out and result.isolated and not result.passed
+
+
+# --- a fix may not forge its own verdict -------------------------------------
+
+# BROKEN_APP is broken AND still vulnerable. This hook rewrites the junit report
+# on exit so that every test "passed". Before the gate, verify() said ok=True.
+FORGING_FIX = BROKEN_APP + '''
+import atexit as _a, glob as _g, os as _o, re as _r, sys as _s
+def _rewrite():
+    path = next((x.split("=", 1)[1] for x in _s.argv if x.startswith("--junitxml=")), None)
+    if path:
+        names = [n for f in _g.glob("test_*.py")
+                 for n in _r.findall(r"^def (test_\\w+)", open(f).read(), _r.M)]
+        open(path, "w").write("<testsuites><testsuite>" + "".join(
+            f'<testcase name="{n}"/>' for n in names) + "</testsuite></testsuites>")
+    _o._exit(0)
+_a.register(_rewrite)
+'''
+
+
+def test_a_fix_that_would_forge_its_report_is_never_run(tmp_path, functional_runs):
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    result = verify(case, fix_for(case, FORGING_FIX), CONFIG)
+    assert functional_runs == []                         # not even the baseline
+    assert "import atexit" in result.disallowed and "_exit" in result.disallowed
+    assert result.ok is False and result.applied is False
+    assert "was NOT run" in result.feedback_for_repair
+
+
+@pytest.mark.parametrize("added", [
+    "pid = os.fork()",
+    "os._exit(0)",
+    "eval('1')",
+    "m = __import__('atexit')",
+    "g = find.__globals__",
+    "from os import fork as f",
+    "import ctypes",
+])
+def test_the_gate_flags_what_a_security_fix_never_adds(added):
+    from stages.safety import _added_code_problems
+    assert _added_code_problems("import os\n", f"import os\n{added}\n")
+
+
+def test_the_gate_allows_what_security_fixes_add_and_what_the_original_had():
+    from stages.safety import _added_code_problems
+    original = "import os\nimport sys\nprint(sys.argv, eval('1'))\n"
+    fixed = ("import hmac, secrets, shlex\nfrom pathlib import Path\nimport os\nimport sys\n"
+             "print(sys.argv, eval('1'), Path(__file__).parent)\n")
+    assert _added_code_problems(original, fixed) == []
+
+
+DATASET = Path(__file__).resolve().parents[2] / "dataset"
+
+
+@pytest.mark.skipif(not DATASET.is_dir(), reason="needs ../dataset")
+def test_every_dataset_reference_fix_passes_the_gate():
+    from stages.safety import _added_code_problems
+    blocked = {}
+    for case in sorted(DATASET.glob("case_*")):
+        problems = _added_code_problems((case / "app.py").read_text(encoding="utf-8"),
+                                        (case / "reference_fix.py").read_text(encoding="utf-8"))
+        if problems:
+            blocked[case.name] = problems
+    assert blocked == {}
+
+
+# --- fail closed --------------------------------------------------------------
+
+def test_a_crashed_rescan_is_not_clear(tmp_path, monkeypatch):
+    """Handing back the vulnerable file while bandit crashes must not pass."""
+    from stages import safety
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("bandit missing")
+
+    monkeypatch.setattr(safety, "detect_code", crash)
+    case = make_case(tmp_path, code=VULNERABLE_APP, with_security=False)
+    result = verify(case, fix_for(case, VULNERABLE_APP), CONFIG)
+    assert result.rescan_clear is False and result.vuln_gone is False
+    assert result.ok is False
+    assert "re-scan failed: RuntimeError: bandit missing" in result.feedback_for_repair
+
+
+def test_security_tests_with_no_result_fail_closed(tmp_path, monkeypatch):
+    from stages import safety
+    real = safety._run_pytest
+
+    def security_never_reports(workdir, test_file, cfg):
+        if test_file == "test_security.py":
+            return TestRun(ran=False, returncode=0, output="no test report (exit 0)")
+        return real(workdir, test_file, cfg)
+
+    monkeypatch.setattr(safety, "_run_pytest", security_never_reports)
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    result = verify(case, fix_for(case, FIXED_APP), CONFIG)
+    assert result.security_verdict is False and result.vuln_gone is False
+    assert "produced no result" in result.feedback_for_repair
+
+
+def test_a_run_that_writes_no_report_did_not_run_and_is_not_cached(tmp_path, monkeypatch):
+    from stages import safety
+    monkeypatch.setattr(safety, "_BASELINES", {})
+    case = make_case(tmp_path, code=VULNERABLE_APP)
+    (case.path / "test_functional.py").write_text(
+        "import os\n\n\ndef test_ends_the_process(mod):\n    os._exit(0)\n", encoding="utf-8")
+    result = verify(case, fix_for(case, FIXED_APP), CONFIG)
+    assert result.functional_baseline.ran is False
+    assert result.functional_baseline.returncode == 0     # exit 0, and still not a pass
+    assert result.functional_after.ran is False and result.ok is False
+    assert safety._BASELINES == {}
+
+
+# --- what comes back from a run is bounded and parsed defensively ------------
+
+def test_output_is_capped_however_much_the_run_prints():
+    from stages.safety import _run_capped
+    returncode, output, timed_out = _run_capped(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 20_000_000 + 'END')"],
+        timeout=60, limit=4000)
+    assert returncode == 0 and not timed_out
+    assert len(output) == 4000 and output.endswith("END")
+
+
+def test_the_container_stream_splits_output_and_report():
+    from stages.safety import REPORT_MARKER, _parse_report, _split_container_stream
+    report = '<testsuites><testsuite><testcase name="test_a"/></testsuite></testsuites>'
+    output, xml = _split_container_stream(f"1 passed\n{REPORT_MARKER} 0\n{report}")
+    assert output == "1 passed" and _parse_report(xml) == {"test_a": True}
+    # Docker failed before the shell ran: no marker, the error is the output
+    output, xml = _split_container_stream("docker: Error response from daemon")
+    assert xml is None and "Error response" in output
+
+
+@pytest.mark.parametrize("xml", [
+    None, "", "<testsuites><testsuite>",                          # missing, truncated
+    '<!DOCTYPE x [<!ENTITY a "aaaa">]><testsuites/>',               # entity tricks
+])
+def test_an_unusable_report_is_no_report(xml):
+    from stages.safety import _parse_report
+    assert _parse_report(xml) is None
 
 
 def _sandbox_ready() -> bool:
