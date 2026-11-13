@@ -440,10 +440,22 @@ def _docker_command(name: str, workdir: Path, test_file: str, cfg: Config) -> li
 def _run_in_container(workdir: Path, test_file: str, cfg: Config) -> TestRun:
     name = f"aieval-{uuid.uuid4().hex[:12]}"
 
+    kill_problem = ""
+
     def kill_container() -> None:
         # Killing the `docker` client does not stop the container; this does,
         # and with it every process inside. --rm then removes it.
-        subprocess.run(["docker", "kill", name], capture_output=True, timeout=30)
+        # If Docker itself does not answer, say so and carry on: the run is
+        # already a timeout (a fail), and a stuck daemon must not turn it into
+        # a crashed case. The container keeps its limits and has no network.
+        nonlocal kill_problem
+        try:
+            subprocess.run(["docker", "kill", name], capture_output=True, timeout=30)
+        except (subprocess.TimeoutExpired, OSError) as error:
+            kill_problem = (f"[stage 4] could not stop container {name} after the "
+                            f"timeout ({type(error).__name__}); it may still be "
+                            f"running. Remove it with: docker rm -f {name}")
+            print(kill_problem, file=sys.stderr)
 
     returncode, stream, timed_out = _run_capped(
         _docker_command(name, workdir, test_file, cfg), cfg.sandbox_timeout,
@@ -451,7 +463,8 @@ def _run_in_container(workdir: Path, test_file: str, cfg: Config) -> TestRun:
     output, report = _split_container_stream(stream)
     if timed_out:
         return TestRun(ran=True, passed=False, timed_out=True, returncode=-9,
-                       output=output, isolated=True)
+                       output="\n".join(p for p in (output, kill_problem) if p),
+                       isolated=True)
     return _test_run(returncode, output, _parse_report(report), isolated=True)
 
 

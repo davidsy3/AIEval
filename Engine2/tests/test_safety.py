@@ -346,6 +346,26 @@ def test_a_container_timeout_kills_the_container(tmp_path, monkeypatch):
     assert result.timed_out and result.isolated and not result.passed
 
 
+def test_a_docker_kill_that_hangs_is_reported_not_raised(tmp_path, monkeypatch, capsys):
+    from stages import safety
+    names = []
+
+    def slow_docker(name, workdir, test_file, cfg):
+        names.append(name)
+        return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+    def hung_kill(cmd, **kwargs):                        # Docker does not answer
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(safety, "_docker_command", slow_docker)
+    monkeypatch.setattr(safety.subprocess, "run", hung_kill)
+    cfg = dataclasses.replace(CONFIG, sandbox_timeout=1)
+    result = safety._run_in_container(tmp_path, "test_functional.py", cfg)
+    assert result.timed_out and not result.passed          # still a fail, not a crash
+    assert f"docker rm -f {names[0]}" in result.output
+    assert f"could not stop container {names[0]}" in capsys.readouterr().err
+
+
 # --- a fix may not forge its own verdict -------------------------------------
 
 # BROKEN_APP is broken AND still vulnerable. This hook rewrites the junit report
