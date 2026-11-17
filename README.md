@@ -48,6 +48,15 @@ After the suggested fix is applied, the framework will analyze the code again an
 2. Press `F5` (or run **Run > Start Debugging**) to open a new Extension Development Host window with the extension loaded.
 3. In the Extension Development Host window, open the Command Palette (`Cmd+Shift+P` on macOS, `Ctrl+Shift+P` on Windows/Linux) and run **AI Evaluator: Analyze for Vulnerabilities**.
 
+### Applying Suggested Changes
+
+When an analysis finds vulnerabilities and the engine produces fixed code, the AI Evaluator view shows a **Suggested Changes** card with the compatibility risk reported by the engine:
+
+* **Review Changes** opens a diff of the analyzed file against the suggested fix.
+* **Apply Suggested Changes** replaces the analyzed file with the suggested fix and saves it. Use Undo in the editor to revert.
+
+Nothing is changed until you click Apply, and only the analyzed file is changed. If the file was edited after the analysis, Apply is refused; analyze the file again first. Local mode (no API key) does not generate fixes, so no card is shown. After applying, run the analysis again to verify the fix.
+
 ## Supported Vulnerabilities
 
 The initial version of the project will focus on Python and a predefined set of vulnerabilities, including:
