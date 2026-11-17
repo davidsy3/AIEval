@@ -132,6 +132,9 @@ def decide(case: Case,
         blockers.append(f"compatibility risk is {fix.risk}")
     if not safety.syntax_ok:
         blockers.append("fixed file does not parse")
+    if safety.disallowed:
+        blockers.append("fix adds code a security fix does not need, so it was not "
+                        "run: " + ", ".join(safety.disallowed))
     if safety.regressions:
         blockers.append(f"{len(safety.regressions)} functional test(s) regressed")
     if safety.decoy_breaks:
