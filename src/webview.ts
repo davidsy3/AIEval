@@ -60,11 +60,12 @@ export function parseCompatibilityRisk(report: string): string | undefined {
 	return risk && risk[0].toUpperCase() + risk.slice(1).toLowerCase();
 }
 
-export function webviewHtml(): string {
+// gooseSrc is the Webview URI of the analyzing animation; cspSource allows the Webview to load it.
+export function webviewHtml(gooseSrc: string, cspSource: string): string {
 	const nonce = randomBytes(16).toString('hex');
 	return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource}; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
 <title>AI Evaluator</title><style nonce="${nonce}">
 body { background: var(--vscode-editor-background); color: var(--vscode-foreground); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); padding: 24px; }
 main { max-width: 780px; margin: auto; } h1 { font-size: 24px; margin-bottom: 8px; } h2 { font-size: 16px; margin-top: 32px; }
@@ -81,11 +82,12 @@ button:hover { background: var(--vscode-button-hoverBackground); } button:disabl
 .change.accepted { border-color: var(--vscode-testing-iconPassed, var(--vscode-focusBorder)); } .change.declined { opacity: .7; }
 .status-accepted { color: var(--vscode-testing-iconPassed, inherit); } .status-declined { color: var(--vscode-descriptionForeground); }
 button[aria-pressed="true"] { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.thinking { display: flex; align-items: center; gap: 10px; margin-top: 14px; color: var(--vscode-descriptionForeground); } .thinking[hidden] { display: none; } .thinking img { width: 48px; height: 48px; flex: none; }
 @media (max-width: 400px) { body { padding: 12px; } }
 </style></head><body><main><h1>AI Evaluator</h1><p class="muted">Analyze Python code for security vulnerabilities.</p>
 <span class="label">Current File</span><div id="file">No file selected</div><button id="analyze">Analyze File</button>
 <div id="analyzed" hidden><span class="label">File Analyzed</span><div id="analyzed-file"></div></div>
-<h2>Security Findings</h2><section id="results" aria-live="polite"><p>Run an analysis to view security findings.</p></section></main>
+<h2>Security Findings</h2><div id="thinking" class="thinking" role="status" hidden><img src="${gooseSrc}" alt=""><span>Waddling through the code...</span></div><section id="results" aria-live="polite"><p>Run an analysis to view security findings.</p></section></main>
 <script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 const button = document.getElementById('analyze');
@@ -98,7 +100,8 @@ window.addEventListener('message', ({ data }) => {
  const analyzed = document.getElementById('analyzed-file'); analyzed.textContent = data.analyzedFile || ''; analyzed.title = data.analyzedPath || ''; document.getElementById('analyzed').hidden = !data.analyzedFile;
  button.disabled = data.busy; button.textContent = data.busy ? 'Analyzing...' : 'Analyze File';
  results.replaceChildren();
- if (data.busy) { results.append(element('p', 'Analysis is running...')); return; }
+ document.getElementById('thinking').hidden = !data.busy;
+ if (data.busy) return;
  if (data.error) { results.append(element('h3', data.errorTitle || 'Analysis failed', 'error'), element('p', data.error)); return; }
  if (!data.findings) { results.append(element('p', 'Run an analysis to view security findings.')); return; }
  if (data.note) results.append(element('p', data.note, 'muted'));

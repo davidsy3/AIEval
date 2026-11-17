@@ -22,7 +22,7 @@ function publish() {
 function openEvaluator(context: vscode.ExtensionContext) {
 	if (panel) { panel.reveal(vscode.ViewColumn.Beside); return; }
 	panel = vscode.window.createWebviewPanel('aiEvaluator', 'AI Evaluator', vscode.ViewColumn.Beside, {
-		enableScripts: true, localResourceRoots: [],
+		enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
 	});
 	panel.webview.onDidReceiveMessage(message => {
 		if (message?.command === 'ready') { publish(); }
@@ -34,7 +34,8 @@ function openEvaluator(context: vscode.ExtensionContext) {
 	}, undefined, context.subscriptions);
 	panel.onDidDispose(() => { panel = undefined; }, undefined, context.subscriptions);
 	context.subscriptions.push(panel);
-	panel.webview.html = webviewHtml();
+	const goose = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'nerdGoose.gif'));
+	panel.webview.html = webviewHtml(goose.toString(), panel.webview.cspSource);
 }
 
 export function activate(context: vscode.ExtensionContext) {
