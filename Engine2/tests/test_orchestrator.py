@@ -59,7 +59,9 @@ def test_the_retry_loop_stops_at_the_limit(tmp_path):
 
 def test_everything_cleared_in_triage_means_no_repair(tmp_path):
     case = make_case(tmp_path, code=VULNERABLE_APP)
-    llm = FakeLLM([CLEARED])
+    # Stage 2 judges a file's findings in one batched call, so a reply that
+    # clears everything needs a block per finding (bandit reports 2 here).
+    llm = FakeLLM([f"FINDING 1\n{CLEARED}\n\nFINDING 2\n{CLEARED}"])
     result = run_case(case, llm, Config())
     assert result.reported == []
     assert result.fixes == []
