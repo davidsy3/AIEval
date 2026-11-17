@@ -7,3 +7,9 @@ Engine/output/
 **/__pycache__
 *.pyc
 Engine/.env
+
+Engine2/.venv
+Engine2/.env
+Engine2/results/
+
+.vibe-wise/

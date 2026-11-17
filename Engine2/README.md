@@ -33,6 +33,19 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
+Stage 4 runs each case's tests in a Docker container (no network, read-only
+case files, memory/CPU/process caps). Install Docker Desktop, start it, and
+build the sandbox image once:
+
+```bash
+docker build -t aieval-sandbox sandbox
+```
+
+Without Docker, `run.py` stops before running anything. To run anyway, as
+**you** and with **no isolation**, pass `--allow-unisolated` (or set
+`AIEVAL_ALLOW_UNISOLATED=1`) -- only on cases you have read. `pytest` opts in
+by itself (`tests/conftest.py`), so the test suite runs without Docker.
+
 For live runs, add a key (the file is git-ignored):
 
 ```bash
@@ -82,6 +95,7 @@ engine2/
   stages/repair.py    stage 3
   stages/safety.py    stage 4   <-- runs untrusted code, read the warning
   stages/decide.py    stage 5
+  sandbox/Dockerfile  the image stage 4 runs each case's tests in
   tests/              one group per stage + fakes.py (FakeLLM and hand-made cases)
   pytest.ini          collects tests/ only, never the dataset's own test files
   results/            run output (git-ignored)
@@ -94,7 +108,7 @@ engine2/
 | **1 Detect** | `stages/detect.py` | `detect(case, cfg) -> list[Finding]` | **false-negative rate** | Add CWE-22 detection. Bandit has no path-traversal rule, so all 7 CWE-22 vulns are invisible and that rate is 100%. Start from `_ast_findings` (behind `--ast`), then move to Semgrep rules. |
 | **2 Triage + explain** | `stages/triage.py` | `triage(case, findings, llm, cfg) -> list[TriagedFinding]` | **false-positive rate** | Kill the noise. Offline, 76% of reported findings have no matching annotation; 16 land on annotated decoys. Batch a file's findings into one call while you are there. |
 | **3 Repair** | `stages/repair.py` | `repair(case, confirmed, llm, cfg, feedback, attempt) -> Fix` | shares **regression rate** with stage 4 | Move from whole-file rewrite to a patch that touches only the vulnerable lines. Whole-file rewriting is where regressions come from. |
-| **4 Safety net** | `stages/safety.py` | `verify(case, fix, cfg) -> SafetyResult` | **regression rate** | **Put the test execution in a container with no network.** It currently runs untrusted code as you. Then make the re-scan fix-aware (see below). |
+| **4 Safety net** | `stages/safety.py` | `verify(case, fix, cfg) -> SafetyResult` | **regression rate** | Make the re-scan fix-aware (see below). Test execution already runs in a Docker sandbox (`sandbox/Dockerfile`). |
 | **5 Decide + report** | `stages/decide.py` | `decide(case, triaged, fix, safety, cfg) -> Decision` and `score(results, cases, cfg) -> dict` | **the report** | Per-case and per-subtlety breakdowns, and a CSV/markdown export so results go straight into the write-up. |
 
 Shared files (`models.py`, `config.py`, `llm.py`, `dataset_loader.py`,
@@ -197,8 +211,10 @@ Each stage file's docstring lists its own. The ones that show up in the numbers:
 - **CWE-798 depends on bandit's name wordlist.** `B105`/`B106` look for
   password-ish names, so a literal named `SYNC_TOKEN` or a key inside a dict
   default is missed.
-- **Stage 4 runs untrusted code with no isolation.** Temp dir and a timeout, no
-  container, no network restriction, your user, your environment variables.
+- **Stage 4's sandbox needs Docker.** With `--allow-unisolated` it falls back to
+  running untrusted code as you, with no isolation. The real-container test is
+  skipped on machines without Docker, so the container path is only exercised
+  where Docker is installed.
 
 ## Not here yet, on purpose
 
@@ -206,8 +222,6 @@ These are first tasks, not missing pieces:
 
 - **Semgrep** as a second detector next to Bandit (stage 1).
 - **RAG** over CWE/CVE text and project docs to ground explanations (stage 2).
-- **Docker** isolation for test execution (stage 4) -- the one with a security
-  reason to be first.
 - Patch-level repair instead of whole-file rewrite (stage 3).
 - Parallel case execution, and resume for interrupted runs (orchestrator).
 - Wiring the pipeline back into the VS Code extension (`../src/extension.ts`

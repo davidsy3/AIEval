@@ -95,6 +95,18 @@ class Config:
     vuln_test_prefix: str = "test_v"
     decoy_test_prefix: str = "test_d"
 
+    # Stage 4 runs each pytest file in a Docker container built from
+    # sandbox/Dockerfile: no network, case folder read-only, these limits.
+    sandbox_image: str = "aieval-sandbox"
+    sandbox_memory: str = "512m"
+    sandbox_cpus: str = "1"
+    sandbox_pids: int = 64
+    sandbox_tmpfs_mb: int = 64         # the only writable scratch space inside
+    sandbox_timeout: int = 60          # seconds per sandboxed pytest run
+    # Without Docker, stage 4 refuses to run untrusted code unless this is set
+    # (--allow-unisolated, or AIEVAL_ALLOW_UNISOLATED=1). It then runs as YOU.
+    allow_unisolated: bool = os.environ.get("AIEVAL_ALLOW_UNISOLATED") == "1"
+
     # --- stage 5 --------------------------------------------------------------
     line_tolerance: int = 3            # a finding matches an annotation within +/- this
 
